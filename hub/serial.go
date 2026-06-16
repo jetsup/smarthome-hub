@@ -3,45 +3,56 @@ package hub
 import (
 	"encoding/binary"
 	"fmt"
-	"go.bug.st/serial" // Updated import
 	"log"
+
+	"go.bug.st/serial"
 )
 
 func StartSerialWorker(portName string) {
-	// Set up the connection configuration
-	mode := &serial.Mode{
-		BaudRate: 115200,
-	}
-
+	mode := &serial.Mode{BaudRate: 115200}
 	stream, err := serial.Open(portName, mode)
 	if err != nil {
 		log.Fatalf("Failed to open serial port: %v", err)
 	}
 	defer stream.Close()
 
-	log.Printf("Listening for ESP32 Gateway packets on %s...", portName)
+	log.Printf("Listening for synchronized ESP32 Gateway packets on %s...", portName)
 
-	// Buffer size matching our packed C-Struct byte payload footprint
-	buf := make([]byte, 7)
+	oneByte := make([]byte, 1)
+	payloadBuf := make([]byte, 7) // Remaining 7 bytes of our 8-byte struct
 
 	for {
-		n, err := stream.Read(buf)
+		//Hunt for the Magic Byte (0xAA)
+		_, err := stream.Read(oneByte)
 		if err != nil {
-			log.Printf("Serial read error: %v", err)
 			continue
 		}
+		if oneByte[0] != 0xAA {
+			continue // Drop byte and keep hunting
+		}
 
-		if n == 7 { // Simple validation to ensure a full packet arrived
-			msgType := buf[0]
-			deviceId := binary.LittleEndian.Uint32(buf[1:5])
-			value := binary.LittleEndian.Uint16(buf[5:7])
+		//Read the remaining 7 bytes sequentially
+		bytesRead := 0
+		for bytesRead < 7 {
+			n, err := stream.Read(payloadBuf[bytesRead:])
+			if err != nil {
+				break
+			}
+			bytesRead += n
+		}
 
-			// Dynamically register or update device state
+		//Parse only if we successfully grabbed a full frame
+		if bytesRead == 7 {
+			msgType := payloadBuf[0]
+			deviceId := binary.LittleEndian.Uint32(payloadBuf[1:5])
+			value := binary.LittleEndian.Uint16(payloadBuf[5:7])
+
+			// Update device state cleanly
 			NetworkRegistry[deviceId] = DeviceState{
 				DeviceID: deviceId,
 				Value:    value,
 			}
-			fmt.Printf("[Mesh Packet] Type: %d | ID: %d | Val: %d\n", msgType, deviceId, value)
+			fmt.Printf("[Synced Mesh Packet] ID: %d | Type: %d | Val: %d\n", deviceId, msgType, value)
 		}
 	}
 }
