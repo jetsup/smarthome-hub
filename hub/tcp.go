@@ -57,16 +57,17 @@ func StartTCPWorker(addr string) {
 			continue
 		}
 
-		msgType := buf[1]
-		deviceId := binary.LittleEndian.Uint32(buf[2:6])
+		// msgType := buf[1]
+		deviceID := binary.LittleEndian.Uint32(buf[2:6])
 		value := binary.LittleEndian.Uint16(buf[6:8])
 
-		NetworkRegistry[deviceId] = DeviceState{
-			DeviceID: deviceId,
+		// Update real-time registry
+		NetworkRegistry[deviceID] = DeviceState{
+			DeviceID: deviceID,
 			Value:    value,
 		}
 
-		fmt.Printf("[Verified Mesh Packet] ID: %d | Type: %d | Val: %d\n", deviceId, msgType, value)
+		// fmt.Printf("[Verified Mesh Packet] ID: %d | Type: %d | Val: %d\n", deviceID, msgType, value)
 	}
 }
 
