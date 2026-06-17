@@ -19,14 +19,15 @@ type User struct {
 }
 
 type Gateway struct {
-	ID        string    `gorm:"primaryKey;size:16" json:"id"`
-	UserID    uint      `gorm:"index;not null" json:"userId"`
-	Name      string    `gorm:"size:255;not null" json:"name"`
-	APIKey    string    `gorm:"size:64;uniqueIndex;not null" json:"apiKey,omitempty"`
-	IsOnline  bool      `gorm:"default:false" json:"online"`
-	CreatedAt time.Time `json:"createdAt"`
-	UpdatedAt time.Time `json:"updatedAt"`
-	Nodes     []Node    `gorm:"foreignKey:GatewayID" json:"nodes,omitempty"`
+	ID               string     `gorm:"primaryKey;size:16" json:"id"`
+	UserID           uint       `gorm:"index;not null" json:"userId"`
+	Name             string     `gorm:"size:255;not null" json:"name"`
+	APIKey           string     `gorm:"size:64;uniqueIndex;not null" json:"apiKey,omitempty"`
+	IsOnline         bool       `gorm:"default:false" json:"online"`
+	APIKeyAssignedAt *time.Time `json:"apiKeyAssignedAt"`
+	CreatedAt        time.Time  `json:"createdAt"`
+	UpdatedAt        time.Time  `json:"updatedAt"`
+	Nodes            []Node     `gorm:"foreignKey:GatewayID" json:"nodes,omitempty"`
 }
 
 type Node struct {

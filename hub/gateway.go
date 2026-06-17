@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"net/http"
+	"time"
 
 	"github.com/gin-gonic/gin"
 )
@@ -47,11 +48,12 @@ func CreateGateway(c *gin.Context) {
 	}
 
 	gw := Gateway{
-		ID:       generateGatewayID(),
-		UserID:   userID,
-		Name:     req.Name,
-		APIKey:   generateAPIKey(),
-		IsOnline: false,
+		ID:               generateGatewayID(),
+		UserID:           userID,
+		Name:             req.Name,
+		APIKey:           generateAPIKey(),
+		IsOnline:         false,
+		APIKeyAssignedAt: nil,
 	}
 
 	if err := DB.Create(&gw).Error; err != nil {
@@ -128,6 +130,9 @@ func GetGatewayAPIKey(c *gin.Context) {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Gateway not found"})
 		return
 	}
+
+	now := time.Now()
+	DB.Model(&gw).Update("api_key_assigned_at", &now)
 
 	LogAudit(c, "api_key_retrieved", "gateway", &gw.ID, "API key retrieved for gateway: "+gw.Name)
 
