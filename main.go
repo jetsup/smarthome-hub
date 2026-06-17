@@ -2,6 +2,7 @@ package main
 
 import (
 	"net/http"
+	"path/filepath"
 	"strconv"
 	"smarthome-hub/hub"
 
@@ -19,13 +20,18 @@ func main() {
 	// Set up the Web REST API using Gin
 	r := gin.Default()
 	r.Use(cors.New(cors.Config{
-		AllowOrigins:     []string{"http://localhost:5173", "http://127.0.0.1:5173"},
+		AllowOrigins:     []string{"*"},
 		AllowMethods:     []string{"GET", "POST", "PUT", "DELETE", "OPTIONS"},
 		AllowHeaders:     []string{"Origin", "Content-Type", "Authorization"},
-		AllowCredentials: true,
+		AllowCredentials: false,
 	}))
 
-	// ── Public routes ────────────────────────────────────────────────────────
+	// ── Serve Vue SPA static files ───────────────────────────────────────────
+	uiDir := "../smarthome-ui/dist"
+	r.Static("/assets", filepath.Join(uiDir, "assets"))
+	r.StaticFile("/favicon.ico", filepath.Join(uiDir, "favicon.ico"))
+
+	// ── API routes ────────────────────────────────────────────────────────────
 
 	auth := r.Group("/api/auth")
 	{
@@ -81,6 +87,16 @@ func main() {
 			})
 		})
 	}
+
+	// ── SPA catch-all: serve index.html for any unmatched route ─────────────
+	r.NoRoute(func(c *gin.Context) {
+		// Only return the SPA for non-API paths
+		if len(c.Request.URL.Path) >= 4 && c.Request.URL.Path[:4] == "/api" {
+			c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
+			return
+		}
+		c.File(filepath.Join(uiDir, "index.html"))
+	})
 
 	// Start serving HTTP requests
 	r.Run(":9000")
