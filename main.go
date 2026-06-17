@@ -52,6 +52,22 @@ func main() {
 		api.GET("/gateways/:id/api-key", hub.GetGatewayAPIKey)
 		api.GET("/gateways/:id/nodes", hub.ListNodes)
 
+		// Node discovery & provisioning
+		api.POST("/gateways/:id/scan", hub.StartScan)
+		api.GET("/gateways/:id/discovered", hub.GetDiscoveredNodes)
+		api.POST("/gateways/:id/provision", hub.ProvisionNode)
+
+		// Node disconnect
+		api.DELETE("/gateways/:id/nodes/:deviceId", hub.DisconnectNode)
+
+		// Cross-gateway node discovery
+		api.POST("/nodes/scan", hub.ScanAllGateways)
+		api.GET("/nodes/discovered", hub.GetAllDiscoveredNodesHandler)
+		api.POST("/nodes/provision", hub.ProvisionNodeToGateway)
+
+		// Device ping (updates LastSeen)
+		api.POST("/devices/:id/ping", hub.PingDevice)
+
 		// Real-time device registry (from TCP mesh)
 		api.GET("/devices", func(c *gin.Context) {
 			c.JSON(http.StatusOK, hub.NetworkRegistry)

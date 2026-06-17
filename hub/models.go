@@ -1,6 +1,7 @@
 package hub
 
 import (
+	"sync"
 	"time"
 
 	"gorm.io/gorm"
@@ -31,12 +32,14 @@ type Gateway struct {
 }
 
 type Node struct {
-	ID        uint      `gorm:"primaryKey" json:"id"`
-	GatewayID string    `gorm:"index;not null;size:16" json:"gatewayId"`
-	DeviceID  uint32    `gorm:"not null" json:"deviceId"`
-	LastValue uint16    `gorm:"default:0" json:"value"`
-	LastSeen  time.Time `json:"lastSeen"`
-	CreatedAt time.Time `json:"createdAt"`
+	ID          uint       `gorm:"primaryKey" json:"id"`
+	GatewayID   string     `gorm:"index;not null;size:16" json:"gatewayId"`
+	DeviceID    uint32     `gorm:"not null" json:"deviceId"`
+	APIKey      string     `gorm:"size:64;uniqueIndex" json:"apiKey,omitempty"`
+	LastValue   uint16     `gorm:"default:0" json:"value"`
+	LastSeen    time.Time  `json:"lastSeen"`
+	ConnectedAt *time.Time `json:"connectedAt"`
+	CreatedAt   time.Time  `json:"createdAt"`
 }
 
 type AuditLog struct {
@@ -50,6 +53,17 @@ type AuditLog struct {
 	CreatedAt  time.Time `json:"createdAt"`
 }
 
+// ── Config ────────────────────────────────────────────────────────────────────
+
+// NodeOfflineTimeout defines how long without a ping/telemetry before a node
+// is considered offline. Override via env var NODE_OFFLINE_TIMEOUT (in seconds).
+var NodeOfflineTimeout = 300 * time.Second // default 5 minutes
+
+// IsNodeOnline returns true if the node's LastSeen is within NodeOfflineTimeout.
+func IsNodeOnline(lastSeen time.Time) bool {
+	return time.Since(lastSeen) <= NodeOfflineTimeout
+}
+
 // ── In-memory registry (real-time device state from TCP) ────────────────────
 
 type DeviceState struct {
@@ -58,6 +72,69 @@ type DeviceState struct {
 }
 
 var NetworkRegistry = make(map[uint32]DeviceState)
+
+// DiscoveredNodes tracks unprovisioned nodes reported by each gateway (gatewayID → set of deviceIDs).
+var (
+	DiscoveredNodes = make(map[string]map[uint32]bool)
+	discoveredMu    sync.RWMutex
+)
+
+func AddDiscoveredNode(gatewayID string, deviceID uint32) {
+	discoveredMu.Lock()
+	defer discoveredMu.Unlock()
+	if DiscoveredNodes[gatewayID] == nil {
+		DiscoveredNodes[gatewayID] = make(map[uint32]bool)
+	}
+	DiscoveredNodes[gatewayID][deviceID] = true
+}
+
+func GetDiscoveredNodeSet(gatewayID string) map[uint32]bool {
+	discoveredMu.RLock()
+	defer discoveredMu.RUnlock()
+	nodes := DiscoveredNodes[gatewayID]
+	if nodes == nil {
+		return nil
+	}
+	result := make(map[uint32]bool, len(nodes))
+	for k, v := range nodes {
+		result[k] = v
+	}
+	return result
+}
+
+func ClearDiscoveredNodes(gatewayID string) {
+	discoveredMu.Lock()
+	defer discoveredMu.Unlock()
+	DiscoveredNodes[gatewayID] = make(map[uint32]bool)
+}
+
+func RemoveDiscoveredNode(gatewayID string, deviceID uint32) {
+	discoveredMu.Lock()
+	defer discoveredMu.Unlock()
+	if nodes := DiscoveredNodes[gatewayID]; nodes != nil {
+		delete(nodes, deviceID)
+	}
+}
+
+type DiscoveredNodeInfo struct {
+	DeviceID  uint32 `json:"deviceId"`
+	GatewayID string `json:"gatewayId"`
+}
+
+func GetAllDiscoveredNodes() []DiscoveredNodeInfo {
+	discoveredMu.RLock()
+	defer discoveredMu.RUnlock()
+	var result []DiscoveredNodeInfo
+	for gwID, nodes := range DiscoveredNodes {
+		for devID := range nodes {
+			result = append(result, DiscoveredNodeInfo{
+				DeviceID:  devID,
+				GatewayID: gwID,
+			})
+		}
+	}
+	return result
+}
 
 // ── Auto-migrate all models ──────────────────────────────────────────────────
 

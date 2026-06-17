@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"strconv"
+	"time"
 
 	"github.com/joho/godotenv"
 	"gorm.io/driver/mysql"
@@ -15,6 +17,14 @@ var DB *gorm.DB
 
 func InitDatabase() {
 	godotenv.Load() // Load .env file if present; silence error if missing
+
+	// Override NodeOfflineTimeout from env var (in seconds)
+	if v := os.Getenv("NODE_OFFLINE_TIMEOUT"); v != "" {
+		if sec, err := strconv.Atoi(v); err == nil && sec > 0 {
+			NodeOfflineTimeout = time.Duration(sec) * time.Second
+			log.Printf("Node offline timeout set to %d seconds", sec)
+		}
+	}
 
 	host := envOrDefault("DB_HOST", "127.0.0.1")
 	port := envOrDefault("DB_PORT", "3306")

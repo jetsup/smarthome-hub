@@ -1,3 +1,4 @@
 build
 *.temp
 .env
+.vscode/settings.json

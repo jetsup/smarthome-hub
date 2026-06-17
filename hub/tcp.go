@@ -8,11 +8,36 @@ import (
 	"log"
 	"net"
 	"strings"
+	"sync"
 )
 
 var (
+	tcpConnMap = make(map[string]net.Conn)
+	tcpConnMu  sync.Mutex
+	// fallback single TCP connection for legacy usage in this file
 	tcpConn net.Conn
 )
+
+// getTCPConn returns the TCP connection for a given gateway ID.
+func getTCPConn(gatewayID string) net.Conn {
+	tcpConnMu.Lock()
+	defer tcpConnMu.Unlock()
+	return tcpConnMap[gatewayID]
+}
+
+// setTCPConn stores the TCP connection for a gateway.
+func setTCPConn(gatewayID string, conn net.Conn) {
+	tcpConnMu.Lock()
+	defer tcpConnMu.Unlock()
+	tcpConnMap[gatewayID] = conn
+}
+
+// removeTCPConn removes the TCP connection for a gateway.
+func removeTCPConn(gatewayID string) {
+	tcpConnMu.Lock()
+	defer tcpConnMu.Unlock()
+	delete(tcpConnMap, gatewayID)
+}
 
 func StartTCPWorker(addr string) {
 	listener, err := net.Listen("tcp", addr)
@@ -52,7 +77,9 @@ func StartTCPWorker(addr string) {
 
 		// Mark gateway online
 		DB.Model(&gw).Update("is_online", true)
+		tcpConnMu.Lock()
 		tcpConn = conn
+		tcpConnMu.Unlock()
 
 		LogAudit(nil, "gateway_connected", "gateway", &gw.ID, "Gateway connected from "+conn.RemoteAddr().String())
 
@@ -68,11 +95,14 @@ func StartTCPWorker(addr string) {
 				log.Printf("Gateway %s disconnected: %v", gw.ID, err)
 				DB.Model(&gw).Update("is_online", false)
 				LogAudit(nil, "gateway_disconnected", "gateway", &gw.ID, "Gateway disconnected")
+				tcpConnMu.Lock()
 				tcpConn = nil
+				tcpConnMu.Unlock()
 				break handleLoop
 			}
 
 			if buf[0] != 0xAA {
+				log.Printf("Bad header 0x%02X from gateway %s", buf[0], gw.ID)
 				continue
 			}
 
@@ -87,18 +117,28 @@ func StartTCPWorker(addr string) {
 			deviceID := binary.LittleEndian.Uint32(buf[2:6])
 			value := binary.LittleEndian.Uint16(buf[6:8])
 
-			NetworkRegistry[deviceID] = DeviceState{
-				DeviceID: deviceID,
-				Value:    value,
-			}
+			switch buf[1] {
+			case 1: // Telemetry / status
+				NetworkRegistry[deviceID] = DeviceState{
+					DeviceID: deviceID,
+					Value:    value,
+				}
+				ReportNode(gw.ID, deviceID, value)
 
-			ReportNode(gw.ID, deviceID, value)
+			case 3: // Discovery broadcast from unprovisioned node
+				log.Printf("Discovery from device %d via gateway %s", deviceID, gw.ID)
+				AddDiscoveredNode(gw.ID, deviceID)
+			}
 		}
 	}
 }
 
 func SendCommand(deviceId uint32, msgType uint8, value uint16) error {
-	if tcpConn == nil {
+	tcpConnMu.Lock()
+	conn := tcpConn
+	tcpConnMu.Unlock()
+
+	if conn == nil {
 		return fmt.Errorf("gateway is not connected")
 	}
 
@@ -114,6 +154,22 @@ func SendCommand(deviceId uint32, msgType uint8, value uint16) error {
 	}
 	buf[8] = calcXor
 
-	_, err := tcpConn.Write(buf)
+	_, err := conn.Write(buf)
+	return err
+}
+
+// SendProvision sends a provisioning command to the gateway with a node API key.
+// Format: BB:<deviceId>:<apiKey>\n
+func SendProvision(deviceId uint32, apiKey string) error {
+	tcpConnMu.Lock()
+	conn := tcpConn
+	tcpConnMu.Unlock()
+
+	if conn == nil {
+		return fmt.Errorf("gateway is not connected")
+	}
+
+	msg := fmt.Sprintf("BB:%d:%s\n", deviceId, apiKey)
+	_, err := conn.Write([]byte(msg))
 	return err
 }
