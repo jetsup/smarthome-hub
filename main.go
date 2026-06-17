@@ -8,8 +8,8 @@ import (
 )
 
 func main() {
-	// Fire up the Serial Processor as a background Goroutine
-	go hub.StartSerialWorker("/dev/ttyUSB0")
+	// Fire up the TCP listener for the WiFi gateway as a background Goroutine
+	go hub.StartTCPWorker(":9010")
 
 	// Set up the Web REST API using Gin
 	r := gin.Default()
