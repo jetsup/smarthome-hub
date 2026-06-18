@@ -17,6 +17,9 @@ func main() {
 	// Fire up the TCP listener for the WiFi gateway as a background Goroutine
 	go hub.StartTCPWorker(":9010")
 
+	// Start the online status monitor goroutine
+	hub.StartOnlineMonitor()
+
 	// Set up the Web REST API using Gin
 	r := gin.Default()
 	r.Use(cors.New(cors.Config{
@@ -41,9 +44,12 @@ func main() {
 
 	// ── Authenticated user routes ────────────────────────────────────────────
 
+	// Dashboard stats (no auth — handled in middleware)
 	api := r.Group("/api")
 	api.Use(hub.AuthMiddleware())
 	{
+		// Dashboard
+		api.GET("/stats", hub.GetDashboardStats)
 		// Gateways
 		api.GET("/gateways", hub.ListGateways)
 		api.POST("/gateways", hub.CreateGateway)
@@ -64,6 +70,13 @@ func main() {
 		api.POST("/nodes/scan", hub.ScanAllGateways)
 		api.GET("/nodes/discovered", hub.GetAllDiscoveredNodesHandler)
 		api.POST("/nodes/provision", hub.ProvisionNodeToGateway)
+
+		// Node detail (by hex nodeId)
+		api.GET("/nodes/:nodeId", hub.GetNode)
+		api.GET("/nodes/by-device/:deviceId", hub.GetNodeByDeviceID)
+
+		// Send command to node (by hex nodeId)
+		api.POST("/nodes/:nodeId/command", hub.ControlNode)
 
 		// Device ping (updates LastSeen)
 		api.POST("/devices/:id/ping", hub.PingDevice)

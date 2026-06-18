@@ -25,6 +25,7 @@ type Gateway struct {
 	Name             string     `gorm:"size:255;not null" json:"name"`
 	APIKey           string     `gorm:"size:64;uniqueIndex;not null" json:"apiKey,omitempty"`
 	IsOnline         bool       `gorm:"default:false" json:"online"`
+	LastSeen         time.Time  `json:"lastSeen"`
 	APIKeyAssignedAt *time.Time `json:"apiKeyAssignedAt"`
 	CreatedAt        time.Time  `json:"createdAt"`
 	UpdatedAt        time.Time  `json:"updatedAt"`
@@ -32,14 +33,17 @@ type Gateway struct {
 }
 
 type Node struct {
-	ID          uint       `gorm:"primaryKey" json:"id"`
-	GatewayID   string     `gorm:"index;not null;size:16" json:"gatewayId"`
-	DeviceID    uint32     `gorm:"not null" json:"deviceId"`
-	APIKey      string     `gorm:"size:64;uniqueIndex" json:"apiKey,omitempty"`
-	LastValue   uint16     `gorm:"default:0" json:"value"`
-	LastSeen    time.Time  `json:"lastSeen"`
-	ConnectedAt *time.Time `json:"connectedAt"`
-	CreatedAt   time.Time  `json:"createdAt"`
+	ID           uint       `gorm:"primaryKey" json:"id"`
+	NodeID       string     `gorm:"uniqueIndex;size:16" json:"nodeId"`
+	GatewayID    string     `gorm:"index;not null;size:16" json:"gatewayId"`
+	DeviceID     uint32     `gorm:"uniqueIndex:idx_device_gateway;not null" json:"deviceId"`
+	APIKey       string     `gorm:"size:64;uniqueIndex" json:"apiKey,omitempty"`
+	DeviceType   uint8      `gorm:"default:0" json:"deviceType"`
+	Capabilities uint32     `gorm:"default:0" json:"capabilities"`
+	LastValue    uint16     `gorm:"default:0" json:"value"`
+	LastSeen     time.Time  `json:"lastSeen"`
+	ConnectedAt  *time.Time `json:"connectedAt"`
+	CreatedAt    time.Time  `json:"createdAt"`
 }
 
 type AuditLog struct {
@@ -53,11 +57,34 @@ type AuditLog struct {
 	CreatedAt  time.Time `json:"createdAt"`
 }
 
+// ── Device type constants ─────────────────────────────────────────────────────
+const (
+	DeviceTypeUnknown  = 0
+	DeviceTypeAnalog   = 1
+	DeviceTypeDigital  = 2
+	DeviceTypeRelay    = 3
+	DeviceTypeIR       = 4
+	DeviceTypeHybrid   = 5
+)
+
+// Capability bitmask constants
+const (
+	CapAnalogInput  = 1 << 0
+	CapDigitalInput = 1 << 1
+	CapRelayOutput  = 1 << 2
+	CapIRTX         = 1 << 3
+	CapIRRX         = 1 << 4
+)
+
 // ── Config ────────────────────────────────────────────────────────────────────
 
 // NodeOfflineTimeout defines how long without a ping/telemetry before a node
 // is considered offline. Override via env var NODE_OFFLINE_TIMEOUT (in seconds).
 var NodeOfflineTimeout = 300 * time.Second // default 5 minutes
+
+// GatewayOfflineTimeout defines how long without a heartbeat before a gateway
+// is considered offline.
+var GatewayOfflineTimeout = 60 * time.Second
 
 // IsNodeOnline returns true if the node's LastSeen is within NodeOfflineTimeout.
 func IsNodeOnline(lastSeen time.Time) bool {
@@ -117,8 +144,9 @@ func RemoveDiscoveredNode(gatewayID string, deviceID uint32) {
 }
 
 type DiscoveredNodeInfo struct {
-	DeviceID  uint32 `json:"deviceId"`
-	GatewayID string `json:"gatewayId"`
+	DeviceID   uint32 `json:"deviceId"`
+	GatewayID  string `json:"gatewayId"`
+	DeviceType uint8  `json:"deviceType"`
 }
 
 func GetAllDiscoveredNodes() []DiscoveredNodeInfo {

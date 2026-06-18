@@ -23,6 +23,12 @@ func generateAPIKey() string {
 	return "gwy_" + hex.EncodeToString(b)
 }
 
+func generateNodeID() string {
+	b := make([]byte, 8)
+	rand.Read(b)
+	return hex.EncodeToString(b)
+}
+
 func generateNodeAPIKey() string {
 	b := make([]byte, 16)
 	rand.Read(b)
@@ -44,17 +50,68 @@ type CreateGatewayRequest struct {
 
 // ── Gateway CRUD ──────────────────────────────────────────────────────────────
 
+type GatewayListItem struct {
+	Gateway
+	NodeCount   int `json:"nodeCount"`
+	OnlineNodes int `json:"onlineNodes"`
+}
+
 func ListGateways(c *gin.Context) {
 	userID := c.GetUint("userID")
 
 	var gateways []Gateway
 	DB.Where("user_id = ?", userID).Find(&gateways)
 
-	for i := range gateways {
-		gateways[i].APIKey = maskKey(gateways[i].APIKey)
+	// Batch fetch node counts
+	gwIDs := make([]string, len(gateways))
+	for i, gw := range gateways {
+		gateways[i].APIKey = maskKey(gw.APIKey)
+		gwIDs[i] = gw.ID
 	}
 
-	c.JSON(http.StatusOK, gateways)
+	type NodeCount struct {
+		GatewayID string
+		Count     int
+		Online    int
+	}
+
+	var results []struct {
+		GatewayID string
+		Count     int
+	}
+	DB.Model(&Node{}).Select("gateway_id, COUNT(*) as count").
+		Where("gateway_id IN ? AND connected_at IS NOT NULL", gwIDs).
+		Group("gateway_id").Scan(&results)
+
+	countMap := make(map[string]int, len(results))
+	for _, r := range results {
+		countMap[r.GatewayID] = r.Count
+	}
+
+	var onlineResults []struct {
+		GatewayID string
+		Count     int
+	}
+	cutoff := time.Now().Add(-NodeOfflineTimeout)
+	DB.Model(&Node{}).Select("gateway_id, COUNT(*) as count").
+		Where("gateway_id IN ? AND connected_at IS NOT NULL AND last_seen > ?", gwIDs, cutoff).
+		Group("gateway_id").Scan(&onlineResults)
+
+	onlineMap := make(map[string]int, len(onlineResults))
+	for _, r := range onlineResults {
+		onlineMap[r.GatewayID] = r.Count
+	}
+
+	items := make([]GatewayListItem, len(gateways))
+	for i, gw := range gateways {
+		items[i] = GatewayListItem{
+			Gateway:     gw,
+			NodeCount:   countMap[gw.ID],
+			OnlineNodes: onlineMap[gw.ID],
+		}
+	}
+
+	c.JSON(http.StatusOK, items)
 }
 
 func CreateGateway(c *gin.Context) {
@@ -99,16 +156,18 @@ func GetGateway(c *gin.Context) {
 	}
 
 	var gw Gateway
-	if err := DB.Where("id = ? AND user_id = ?", id, userID).Preload("Nodes").First(&gw).Error; err != nil {
+	if err := DB.Where("id = ? AND user_id = ?", id, userID).
+		Preload("Nodes", "connected_at IS NOT NULL").
+		First(&gw).Error; err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Gateway not found"})
 		return
 	}
 
 	gw.APIKey = maskKey(gw.APIKey)
 
-	filtered := make([]Node, 0)
+	filtered := make([]Node, 0, len(gw.Nodes))
 	for _, n := range gw.Nodes {
-		if !n.LastSeen.IsZero() {
+		if n.ConnectedAt != nil {
 			filtered = append(filtered, n)
 		}
 	}
@@ -120,6 +179,7 @@ func GetGateway(c *gin.Context) {
 		"name":      gw.Name,
 		"apiKey":    gw.APIKey,
 		"online":    gw.IsOnline,
+		"lastSeen":  gw.LastSeen,
 		"nodeCount": nodeCount,
 		"nodes":     gw.Nodes,
 	})

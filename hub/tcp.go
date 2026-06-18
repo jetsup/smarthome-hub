@@ -9,6 +9,7 @@ import (
 	"net"
 	"strings"
 	"sync"
+	"time"
 )
 
 var (
@@ -81,9 +82,13 @@ func StartTCPWorker(addr string) {
 
 func handleGatewayConnection(gatewayID string, conn net.Conn, reader *bufio.Reader) {
 	defer func() {
-		DB.Model(&Gateway{}).Where("id = ?", gatewayID).Update("is_online", false)
-		LogAudit(nil, "gateway_disconnected", "gateway", &gatewayID, "Gateway disconnected")
-		removeTCPConn(gatewayID)
+		// Only mark offline if we're still the active connection for this gateway.
+		// A newer connection may have already taken over after a reconnect.
+		if current := getTCPConn(gatewayID); current == conn {
+			removeTCPConn(gatewayID)
+			DB.Model(&Gateway{}).Where("id = ?", gatewayID).Update("is_online", false)
+			LogAudit(nil, "gateway_disconnected", "gateway", &gatewayID, "Gateway disconnected")
+		}
 	}()
 
 	for {
@@ -119,6 +124,9 @@ func handleGatewayConnection(gatewayID string, conn net.Conn, reader *bufio.Read
 			deviceID := binary.LittleEndian.Uint32(buf[2:6])
 			value := binary.LittleEndian.Uint16(buf[6:8])
 
+			// Update gateway last_seen on any packet
+			DB.Model(&Gateway{}).Where("id = ?", gatewayID).Update("last_seen", time.Now())
+
 			switch buf[1] {
 			case 1: // Telemetry
 				log.Printf("Telemetry: device %d value %d via gateway %s", deviceID, value, gatewayID)
@@ -129,8 +137,14 @@ func handleGatewayConnection(gatewayID string, conn net.Conn, reader *bufio.Read
 				ReportNode(gatewayID, deviceID, value)
 
 			case 3: // Discovery
-				log.Printf("Discovery: device %d via gateway %s", deviceID, gatewayID)
+				deviceType := uint8(0)
+				if len(buf) >= 8 {
+					deviceType = uint8(buf[6]) // value low byte → device type
+				}
+				log.Printf("Discovery: device %d type %d via gateway %s", deviceID, deviceType, gatewayID)
 				AddDiscoveredNode(gatewayID, deviceID)
+				// If we already have a pending provision for this device, update its type
+				addPendingDeviceType(deviceID, deviceType)
 
 			default:
 				log.Printf("Unknown msgType %d from device %d via gateway %s", buf[1], deviceID, gatewayID)
@@ -143,6 +157,8 @@ func handleGatewayConnection(gatewayID string, conn net.Conn, reader *bufio.Read
 				return
 			}
 			line = strings.TrimSpace(line)
+			// Update gateway last_seen on any incoming message
+			DB.Model(&Gateway{}).Where("id = ?", gatewayID).Update("last_seen", time.Now())
 			log.Printf("TEXT from gateway %s: %s", gatewayID, line)
 
 			// Parse ACK messages
@@ -193,13 +209,14 @@ func SendCommandToGateway(gatewayID string, deviceId uint32, msgType uint8, valu
 }
 
 // SendProvision sends a BB: provisioning command to a specific gateway.
-func SendProvision(gatewayID string, deviceId uint32, apiKey string) error {
+// Format: BB:deviceId:apiKey:gatewayId:deviceType\n
+func SendProvision(gatewayID string, deviceId uint32, apiKey string, deviceType uint8) error {
 	conn := getTCPConn(gatewayID)
 	if conn == nil {
 		return fmt.Errorf("gateway %s is not connected", gatewayID)
 	}
-	msg := fmt.Sprintf("BB:%d:%s\n", deviceId, apiKey)
-	log.Printf("SendProvision to gateway %s: device %d key %s", gatewayID, deviceId, maskKey(apiKey))
+	msg := fmt.Sprintf("BB:%d:%s:%s:%d\n", deviceId, apiKey, gatewayID, deviceType)
+	log.Printf("SendProvision to gateway %s: device %d key %s type %d", gatewayID, deviceId, maskKey(apiKey), deviceType)
 	_, err := conn.Write([]byte(msg))
 	return err
 }

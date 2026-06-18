@@ -52,13 +52,16 @@ func GetDiscoveredNodes(c *gin.Context) {
 
 	nodes := GetDiscoveredNodeSet(gwID)
 	if len(nodes) == 0 {
-		c.JSON(http.StatusOK, []uint32{})
+		c.JSON(http.StatusOK, []DiscoveredNodeInfo{})
 		return
 	}
 
-	result := make([]uint32, 0, len(nodes))
+	result := make([]DiscoveredNodeInfo, 0, len(nodes))
 	for devID := range nodes {
-		result = append(result, devID)
+		result = append(result, DiscoveredNodeInfo{
+			DeviceID:  devID,
+			GatewayID: gwID,
+		})
 	}
 	c.JSON(http.StatusOK, result)
 }
