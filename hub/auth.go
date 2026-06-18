@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/gin-gonic/gin"
+	"github.com/golang-jwt/jwt/v5"
 	"golang.org/x/crypto/bcrypt"
 )
 
@@ -114,6 +115,51 @@ func Login(c *gin.Context) {
 			"firstName": user.FirstName,
 			"lastName":  user.LastName,
 			"email":     user.Email,
+		},
+	})
+}
+
+func Me(c *gin.Context) {
+	uid, _ := c.Get("userID")
+	email, _ := c.Get("email")
+	c.JSON(http.StatusOK, gin.H{
+		"user": gin.H{
+			"id":    uid,
+			"email": email,
+		},
+	})
+}
+
+func RefreshToken(c *gin.Context) {
+	auth := c.GetHeader("Authorization")
+	if auth == "" || !strings.HasPrefix(auth, "Bearer ") {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Missing or invalid token"})
+		return
+	}
+
+	tokenStr := strings.TrimPrefix(auth, "Bearer ")
+	claims := &Claims{}
+
+	token, err := jwt.ParseWithClaims(tokenStr, claims, func(t *jwt.Token) (interface{}, error) {
+		return jwtSecret, nil
+	})
+
+	if err != nil || !token.Valid {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid or expired token"})
+		return
+	}
+
+	newToken, err := GenerateToken(claims.UserID, claims.Email)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to generate token"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"token": newToken,
+		"user": gin.H{
+			"id":    claims.UserID,
+			"email": claims.Email,
 		},
 	})
 }

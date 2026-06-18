@@ -40,14 +40,15 @@ func main() {
 	{
 		auth.POST("/register", hub.Register)
 		auth.POST("/login", hub.Login)
+		auth.POST("/refresh", hub.RefreshToken)
 	}
 
 	// ── Authenticated user routes ────────────────────────────────────────────
 
-	// Dashboard stats (no auth — handled in middleware)
 	api := r.Group("/api")
 	api.Use(hub.AuthMiddleware())
 	{
+		api.GET("/auth/me", hub.Me)
 		// Dashboard
 		api.GET("/stats", hub.GetDashboardStats)
 		// Gateways
