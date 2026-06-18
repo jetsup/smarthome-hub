@@ -14,25 +14,20 @@ import (
 var (
 	tcpConnMap = make(map[string]net.Conn)
 	tcpConnMu  sync.Mutex
-	// fallback single TCP connection for legacy usage in this file
-	tcpConn net.Conn
 )
 
-// getTCPConn returns the TCP connection for a given gateway ID.
 func getTCPConn(gatewayID string) net.Conn {
 	tcpConnMu.Lock()
 	defer tcpConnMu.Unlock()
 	return tcpConnMap[gatewayID]
 }
 
-// setTCPConn stores the TCP connection for a gateway.
 func setTCPConn(gatewayID string, conn net.Conn) {
 	tcpConnMu.Lock()
 	defer tcpConnMu.Unlock()
 	tcpConnMap[gatewayID] = conn
 }
 
-// removeTCPConn removes the TCP connection for a gateway.
 func removeTCPConn(gatewayID string) {
 	tcpConnMu.Lock()
 	defer tcpConnMu.Unlock()
@@ -56,7 +51,6 @@ func StartTCPWorker(addr string) {
 		}
 		log.Printf("Gateway connected from %s", conn.RemoteAddr())
 
-		// ── Authenticate with API key ──────────────────────────────────────────
 		reader := bufio.NewReader(conn)
 		line, err := reader.ReadString('\n')
 		if err != nil {
@@ -75,34 +69,41 @@ func StartTCPWorker(addr string) {
 			continue
 		}
 
-		// Mark gateway online
 		DB.Model(&gw).Update("is_online", true)
-		tcpConnMu.Lock()
-		tcpConn = conn
-		tcpConnMu.Unlock()
+		setTCPConn(gw.ID, conn)
 
 		LogAudit(nil, "gateway_connected", "gateway", &gw.ID, "Gateway connected from "+conn.RemoteAddr().String())
+		log.Printf("Gateway %s (%s) authenticated — API key %s", gw.ID, gw.Name, maskKey(apiKey))
 
-		log.Printf("Gateway %s (%s) authenticated", gw.ID, gw.Name)
+		go handleGatewayConnection(gw.ID, conn, reader)
+	}
+}
 
-		// ── Read packets ────────────────────────────────────────────────────────
-		buf := make([]byte, 9)
+func handleGatewayConnection(gatewayID string, conn net.Conn, reader *bufio.Reader) {
+	defer func() {
+		DB.Model(&Gateway{}).Where("id = ?", gatewayID).Update("is_online", false)
+		LogAudit(nil, "gateway_disconnected", "gateway", &gatewayID, "Gateway disconnected")
+		removeTCPConn(gatewayID)
+	}()
 
-	handleLoop:
-		for {
-			_, err := io.ReadFull(reader, buf)
-			if err != nil {
-				log.Printf("Gateway %s disconnected: %v", gw.ID, err)
-				DB.Model(&gw).Update("is_online", false)
-				LogAudit(nil, "gateway_disconnected", "gateway", &gw.ID, "Gateway disconnected")
-				tcpConnMu.Lock()
-				tcpConn = nil
-				tcpConnMu.Unlock()
-				break handleLoop
+	for {
+		// Peek at first byte to distinguish packet types
+		peek, err := reader.Peek(1)
+		if err != nil {
+			log.Printf("Gateway %s disconnected: %v", gatewayID, err)
+			return
+		}
+
+		if peek[0] == 0xAA {
+			// Standard 9-byte ESP-NOW packet
+			buf := make([]byte, 9)
+			if _, err := io.ReadFull(reader, buf); err != nil {
+				log.Printf("Gateway %s read error: %v", gatewayID, err)
+				return
 			}
 
 			if buf[0] != 0xAA {
-				log.Printf("Bad header 0x%02X from gateway %s", buf[0], gw.ID)
+				log.Printf("Bad header 0x%02X from gateway %s", buf[0], gatewayID)
 				continue
 			}
 
@@ -111,6 +112,7 @@ func StartTCPWorker(addr string) {
 				calcXor ^= buf[i]
 			}
 			if calcXor != buf[8] {
+				log.Printf("Checksum mismatch from gateway %s", gatewayID)
 				continue
 			}
 
@@ -118,58 +120,100 @@ func StartTCPWorker(addr string) {
 			value := binary.LittleEndian.Uint16(buf[6:8])
 
 			switch buf[1] {
-			case 1: // Telemetry / status
+			case 1: // Telemetry
+				log.Printf("Telemetry: device %d value %d via gateway %s", deviceID, value, gatewayID)
 				NetworkRegistry[deviceID] = DeviceState{
 					DeviceID: deviceID,
 					Value:    value,
 				}
-				ReportNode(gw.ID, deviceID, value)
+				ReportNode(gatewayID, deviceID, value)
 
-			case 3: // Discovery broadcast from unprovisioned node
-				log.Printf("Discovery from device %d via gateway %s", deviceID, gw.ID)
-				AddDiscoveredNode(gw.ID, deviceID)
+			case 3: // Discovery
+				log.Printf("Discovery: device %d via gateway %s", deviceID, gatewayID)
+				AddDiscoveredNode(gatewayID, deviceID)
+
+			default:
+				log.Printf("Unknown msgType %d from device %d via gateway %s", buf[1], deviceID, gatewayID)
+			}
+		} else {
+			// Text message (ACK, etc.) — read until newline
+			line, err := reader.ReadString('\n')
+			if err != nil {
+				log.Printf("Gateway %s read error (text): %v", gatewayID, err)
+				return
+			}
+			line = strings.TrimSpace(line)
+			log.Printf("TEXT from gateway %s: %s", gatewayID, line)
+
+			// Parse ACK messages
+			if strings.HasPrefix(line, "ACK:") {
+				parts := strings.SplitN(line, ":", 3)
+				if len(parts) >= 3 {
+					ackType := parts[1]
+					ackDevice := parts[2]
+					log.Printf("ACK %s for device %s from gateway %s", ackType, ackDevice, gatewayID)
+				}
 			}
 		}
 	}
 }
 
+// SendCommand broadcasts a command packet to all connected gateways.
 func SendCommand(deviceId uint32, msgType uint8, value uint16) error {
-	tcpConnMu.Lock()
-	conn := tcpConn
-	tcpConnMu.Unlock()
+	buf := packCommand(deviceId, msgType, value)
 
-	if conn == nil {
-		return fmt.Errorf("gateway is not connected")
+	tcpConnMu.Lock()
+	defer tcpConnMu.Unlock()
+
+	if len(tcpConnMap) == 0 {
+		return fmt.Errorf("no gateways connected")
 	}
 
+	log.Printf("SendCommand broadcast: device %d type %d value %d to %d gateway(s)", deviceId, msgType, value, len(tcpConnMap))
+	var lastErr error
+	for gid, conn := range tcpConnMap {
+		if _, err := conn.Write(buf); err != nil {
+			log.Printf("SendCommand to gateway %s failed: %v", gid, err)
+			lastErr = err
+		}
+	}
+	return lastErr
+}
+
+// SendCommandToGateway sends a command packet to a specific gateway.
+func SendCommandToGateway(gatewayID string, deviceId uint32, msgType uint8, value uint16) error {
+	conn := getTCPConn(gatewayID)
+	if conn == nil {
+		return fmt.Errorf("gateway %s is not connected", gatewayID)
+	}
+	buf := packCommand(deviceId, msgType, value)
+	log.Printf("SendCommand to gateway %s: device %d type %d value %d", gatewayID, deviceId, msgType, value)
+	_, err := conn.Write(buf)
+	return err
+}
+
+// SendProvision sends a BB: provisioning command to a specific gateway.
+func SendProvision(gatewayID string, deviceId uint32, apiKey string) error {
+	conn := getTCPConn(gatewayID)
+	if conn == nil {
+		return fmt.Errorf("gateway %s is not connected", gatewayID)
+	}
+	msg := fmt.Sprintf("BB:%d:%s\n", deviceId, apiKey)
+	log.Printf("SendProvision to gateway %s: device %d key %s", gatewayID, deviceId, maskKey(apiKey))
+	_, err := conn.Write([]byte(msg))
+	return err
+}
+
+func packCommand(deviceId uint32, msgType uint8, value uint16) []byte {
 	buf := make([]byte, 9)
 	buf[0] = 0xAA
 	buf[1] = msgType
 	binary.LittleEndian.PutUint32(buf[2:6], deviceId)
 	binary.LittleEndian.PutUint16(buf[6:8], value)
-
 	calcXor := uint8(0)
 	for i := 0; i < 8; i++ {
 		calcXor ^= buf[i]
 	}
 	buf[8] = calcXor
-
-	_, err := conn.Write(buf)
-	return err
-}
-
-// SendProvision sends a provisioning command to the gateway with a node API key.
-// Format: BB:<deviceId>:<apiKey>\n
-func SendProvision(deviceId uint32, apiKey string) error {
-	tcpConnMu.Lock()
-	conn := tcpConn
-	tcpConnMu.Unlock()
-
-	if conn == nil {
-		return fmt.Errorf("gateway is not connected")
-	}
-
-	msg := fmt.Sprintf("BB:%d:%s\n", deviceId, apiKey)
-	_, err := conn.Write([]byte(msg))
-	return err
+	return buf
 }
