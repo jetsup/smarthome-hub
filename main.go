@@ -59,6 +59,10 @@ func main() {
 		api.GET("/gateways/:id/api-key", hub.GetGatewayAPIKey)
 		api.GET("/gateways/:id/nodes", hub.ListNodes)
 
+		// WiFi credentials
+		api.GET("/gateways/:id/wifi", hub.ListWifiCredentials)
+		api.POST("/gateways/:id/wifi", hub.SaveWifiCredential)
+
 		// Node discovery & provisioning
 		api.POST("/gateways/:id/scan", hub.StartScan)
 		api.GET("/gateways/:id/discovered", hub.GetDiscoveredNodes)

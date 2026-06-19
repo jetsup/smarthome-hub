@@ -221,6 +221,19 @@ func SendProvision(gatewayID string, deviceId uint32, apiKey string, deviceType 
 	return err
 }
 
+// SendRawTextToGateway sends a raw text command to a specific gateway.
+// Format: any text string terminated by \n (the function adds the \n).
+func SendRawTextToGateway(gatewayID string, text string) error {
+	conn := getTCPConn(gatewayID)
+	if conn == nil {
+		return fmt.Errorf("gateway %s is not connected", gatewayID)
+	}
+	msg := text + "\n"
+	log.Printf("SendRawText to gateway %s: %s", gatewayID, text)
+	_, err := conn.Write([]byte(msg))
+	return err
+}
+
 func packCommand(deviceId uint32, msgType uint8, value uint16) []byte {
 	buf := make([]byte, 9)
 	buf[0] = 0xAA

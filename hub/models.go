@@ -46,6 +46,15 @@ type Node struct {
 	CreatedAt    time.Time  `json:"createdAt"`
 }
 
+// WifiCredential stores SSID/password pairs for a gateway.
+type WifiCredential struct {
+	ID        uint      `gorm:"primaryKey" json:"id"`
+	GatewayID string    `gorm:"index;not null;size:16" json:"gatewayId"`
+	SSID      string    `gorm:"size:255;not null" json:"ssid"`
+	Password  string    `gorm:"size:255;not null" json:"password"`
+	CreatedAt time.Time `json:"createdAt"`
+}
+
 type AuditLog struct {
 	ID         uint      `gorm:"primaryKey" json:"id"`
 	UserID     *uint     `gorm:"index" json:"userId"`
@@ -167,5 +176,5 @@ func GetAllDiscoveredNodes() []DiscoveredNodeInfo {
 // ── Auto-migrate all models ──────────────────────────────────────────────────
 
 func AutoMigrate(db *gorm.DB) error {
-	return db.AutoMigrate(&User{}, &Gateway{}, &Node{}, &AuditLog{})
+	return db.AutoMigrate(&User{}, &Gateway{}, &Node{}, &AuditLog{}, &WifiCredential{})
 }
