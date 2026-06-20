@@ -5,10 +5,12 @@ import "sync"
 // PendingProvision tracks a provision that has been sent to a node
 // but not yet acknowledged via telemetry.
 type PendingProvision struct {
-	DeviceID   uint32
-	GatewayID  string
-	APIKey     string
-	DeviceType uint8
+	DeviceID           uint32
+	GatewayID          string
+	APIKey             string
+	DeviceType         uint8
+	Name               string
+	CapabilitiesConfig string
 }
 
 var (
@@ -16,14 +18,16 @@ var (
 	pendingMu         sync.RWMutex
 )
 
-func addPendingProvision(deviceID uint32, gatewayID, apiKey string, deviceType uint8) {
+func addPendingProvision(deviceID uint32, gatewayID, apiKey string, deviceType uint8, name string, capsConfig string) {
 	pendingMu.Lock()
 	defer pendingMu.Unlock()
 	pendingProvisions[deviceID] = PendingProvision{
-		DeviceID:   deviceID,
-		GatewayID:  gatewayID,
-		APIKey:     apiKey,
-		DeviceType: deviceType,
+		DeviceID:           deviceID,
+		GatewayID:          gatewayID,
+		APIKey:             apiKey,
+		DeviceType:         deviceType,
+		Name:               name,
+		CapabilitiesConfig: capsConfig,
 	}
 }
 

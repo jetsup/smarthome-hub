@@ -32,18 +32,27 @@ type Gateway struct {
 	Nodes            []Node     `gorm:"foreignKey:GatewayID" json:"nodes,omitempty"`
 }
 
+type CapabilityConfig struct {
+	Type   string `json:"type"`
+	Pin    int    `json:"pin,omitempty"`
+	Extra  int    `json:"extra,omitempty"`
+	Label  string `json:"label,omitempty"`
+}
+
 type Node struct {
-	ID           uint       `gorm:"primaryKey" json:"id"`
-	NodeID       string     `gorm:"uniqueIndex;size:16" json:"nodeId"`
-	GatewayID    string     `gorm:"index;not null;size:16" json:"gatewayId"`
-	DeviceID     uint32     `gorm:"uniqueIndex:idx_device_gateway;not null" json:"deviceId"`
-	APIKey       string     `gorm:"size:64;uniqueIndex" json:"apiKey,omitempty"`
-	DeviceType   uint8      `gorm:"default:0" json:"deviceType"`
-	Capabilities uint32     `gorm:"default:0" json:"capabilities"`
-	LastValue    uint16     `gorm:"default:0" json:"value"`
-	LastSeen     time.Time  `json:"lastSeen"`
-	ConnectedAt  *time.Time `json:"connectedAt"`
-	CreatedAt    time.Time  `json:"createdAt"`
+	ID                 uint               `gorm:"primaryKey" json:"id"`
+	NodeID             string             `gorm:"uniqueIndex;size:16" json:"nodeId"`
+	GatewayID          string             `gorm:"index;not null;size:16" json:"gatewayId"`
+	DeviceID           uint32             `gorm:"uniqueIndex:idx_device_gateway;not null" json:"deviceId"`
+	APIKey             string             `gorm:"size:64;uniqueIndex" json:"apiKey,omitempty"`
+	DeviceType         uint8              `gorm:"default:0" json:"deviceType"`
+	Capabilities       uint32             `gorm:"default:0" json:"capabilities"`
+	Name               string             `gorm:"size:64;default:''" json:"name"`
+	CapabilitiesConfig string             `gorm:"type:text" json:"capabilitiesConfig,omitempty"`
+	LastValue          uint16             `gorm:"default:0" json:"value"`
+	LastSeen           time.Time          `json:"lastSeen"`
+	ConnectedAt        *time.Time         `json:"connectedAt"`
+	CreatedAt          time.Time          `json:"createdAt"`
 }
 
 // WifiCredential stores SSID/password pairs for a gateway.
@@ -109,9 +118,12 @@ type DeviceState struct {
 
 var NetworkRegistry = make(map[uint32]DeviceState)
 
-// DiscoveredNodes tracks unprovisioned nodes reported by each gateway (gatewayID → set of deviceIDs).
+// DiscoveredNodeTTL is how long a discovered node remains in the set without refresh (5 min).
+const DiscoveredNodeTTL = 5 * 60 * 1000 // milliseconds
+
+// DiscoveredNodes tracks unprovisioned nodes reported by each gateway (gatewayID → deviceID → lastSeen).
 var (
-	DiscoveredNodes = make(map[string]map[uint32]bool)
+	DiscoveredNodes = make(map[string]map[uint32]int64)
 	discoveredMu    sync.RWMutex
 )
 
@@ -119,9 +131,13 @@ func AddDiscoveredNode(gatewayID string, deviceID uint32) {
 	discoveredMu.Lock()
 	defer discoveredMu.Unlock()
 	if DiscoveredNodes[gatewayID] == nil {
-		DiscoveredNodes[gatewayID] = make(map[uint32]bool)
+		DiscoveredNodes[gatewayID] = make(map[uint32]int64)
 	}
-	DiscoveredNodes[gatewayID][deviceID] = true
+	DiscoveredNodes[gatewayID][deviceID] = nowMillis()
+}
+
+func nowMillis() int64 {
+	return time.Now().UnixMilli()
 }
 
 func GetDiscoveredNodeSet(gatewayID string) map[uint32]bool {
@@ -131,17 +147,38 @@ func GetDiscoveredNodeSet(gatewayID string) map[uint32]bool {
 	if nodes == nil {
 		return nil
 	}
+	cutoff := nowMillis() - DiscoveredNodeTTL
 	result := make(map[uint32]bool, len(nodes))
-	for k, v := range nodes {
-		result[k] = v
+	for k, lastSeen := range nodes {
+		if lastSeen >= cutoff {
+			result[k] = true
+		}
 	}
 	return result
+}
+
+// PurgeStaleDiscoveredNodes removes entries older than TTL for all gateways.
+// Called periodically from status monitor.
+func PurgeStaleDiscoveredNodes() {
+	discoveredMu.Lock()
+	defer discoveredMu.Unlock()
+	cutoff := nowMillis() - DiscoveredNodeTTL
+	for gwID, nodes := range DiscoveredNodes {
+		for devID, lastSeen := range nodes {
+			if lastSeen < cutoff {
+				delete(nodes, devID)
+			}
+		}
+		if len(nodes) == 0 {
+			delete(DiscoveredNodes, gwID)
+		}
+	}
 }
 
 func ClearDiscoveredNodes(gatewayID string) {
 	discoveredMu.Lock()
 	defer discoveredMu.Unlock()
-	DiscoveredNodes[gatewayID] = make(map[uint32]bool)
+	DiscoveredNodes[gatewayID] = make(map[uint32]int64)
 }
 
 func RemoveDiscoveredNode(gatewayID string, deviceID uint32) {

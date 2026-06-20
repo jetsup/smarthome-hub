@@ -209,14 +209,15 @@ func SendCommandToGateway(gatewayID string, deviceId uint32, msgType uint8, valu
 }
 
 // SendProvision sends a BB: provisioning command to a specific gateway.
-// Format: BB:deviceId:apiKey:gatewayId:deviceType\n
-func SendProvision(gatewayID string, deviceId uint32, apiKey string, deviceType uint8) error {
+// Format: BB:deviceId:apiKey:gatewayId:deviceType:nodeName:capCount:type1:pin1:extra1:label1:...\n
+func SendProvision(gatewayID string, deviceId uint32, apiKey string, deviceType uint8, nodeName string, caps []CapabilityConfig) error {
 	conn := getTCPConn(gatewayID)
 	if conn == nil {
 		return fmt.Errorf("gateway %s is not connected", gatewayID)
 	}
-	msg := fmt.Sprintf("BB:%d:%s:%s:%d\n", deviceId, apiKey, gatewayID, deviceType)
-	log.Printf("SendProvision to gateway %s: device %d key %s type %d", gatewayID, deviceId, maskKey(apiKey), deviceType)
+	capsStr := compactCapabilities(caps)
+	msg := fmt.Sprintf("BB:%d:%s:%s:%d:%s:%s\n", deviceId, apiKey, gatewayID, deviceType, nodeName, capsStr)
+	log.Printf("SendProvision to gateway %s: device %d key %s type %d name=%s caps=%s", gatewayID, deviceId, maskKey(apiKey), deviceType, nodeName, capsStr)
 	_, err := conn.Write([]byte(msg))
 	return err
 }

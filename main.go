@@ -62,6 +62,7 @@ func main() {
 		// WiFi credentials
 		api.GET("/gateways/:id/wifi", hub.ListWifiCredentials)
 		api.POST("/gateways/:id/wifi", hub.SaveWifiCredential)
+		api.DELETE("/gateways/:id/wifi/:credId", hub.DeleteWifiCredential)
 
 		// Node discovery & provisioning
 		api.POST("/gateways/:id/scan", hub.StartScan)

@@ -65,4 +65,7 @@ func updateNodeStatus() {
 			}
 		}
 	}
+
+	// Purge stale discovered nodes
+	PurgeStaleDiscoveredNodes()
 }

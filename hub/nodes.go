@@ -1,9 +1,11 @@
 package hub
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -15,14 +17,18 @@ type NodeResponse struct {
 }
 
 type ProvisionRequest struct {
-	DeviceID uint32 `json:"deviceId" binding:"required"`
-	Force    bool   `json:"force"`
+	DeviceID           uint32             `json:"deviceId" binding:"required"`
+	Force              bool               `json:"force"`
+	Name               string             `json:"name,omitempty"`
+	CapabilitiesConfig []CapabilityConfig `json:"capabilitiesConfig,omitempty"`
 }
 
 type CrossProvisionRequest struct {
-	DeviceID  uint32 `json:"deviceId" binding:"required"`
-	GatewayID string `json:"gatewayId" binding:"required"`
-	Force     bool   `json:"force"`
+	DeviceID           uint32             `json:"deviceId" binding:"required"`
+	GatewayID          string             `json:"gatewayId" binding:"required"`
+	Force              bool               `json:"force"`
+	Name               string             `json:"name,omitempty"`
+	CapabilitiesConfig []CapabilityConfig `json:"capabilitiesConfig,omitempty"`
 }
 
 type ControlRequest struct {
@@ -44,14 +50,16 @@ func ReportNode(gatewayID string, deviceID uint32, value uint16) {
 		// First telemetry after provision — create the DB record
 		now := time.Now()
 		node = Node{
-			NodeID:      generateNodeID(),
-			GatewayID:   gatewayID,
-			DeviceID:    deviceID,
-			APIKey:      p.APIKey,
-			DeviceType:  p.DeviceType,
-			LastValue:   value,
-			LastSeen:    now,
-			ConnectedAt: &now,
+			NodeID:             generateNodeID(),
+			GatewayID:          gatewayID,
+			DeviceID:           deviceID,
+			APIKey:             p.APIKey,
+			DeviceType:         p.DeviceType,
+			Name:               p.Name,
+			CapabilitiesConfig: p.CapabilitiesConfig,
+			LastValue:          value,
+			LastSeen:           now,
+			ConnectedAt:        &now,
 		}
 		DB.Create(&node)
 		NetworkRegistry[deviceID] = DeviceState{
@@ -111,6 +119,41 @@ func ListNodes(c *gin.Context) {
 	c.JSON(http.StatusOK, resp)
 }
 
+func capTypeToInt(typeStr string) int {
+	switch typeStr {
+	case "analogInput":
+		return 0
+	case "digitalInput":
+		return 1
+	case "digitalOutput":
+		return 2
+	case "relay":
+		return 3
+	case "irTx":
+		return 4
+	case "irRx":
+		return 5
+	case "i2c":
+		return 6
+	case "uart":
+		return 7
+	default:
+		return 0
+	}
+}
+
+func compactCapabilities(caps []CapabilityConfig) string {
+	if len(caps) == 0 {
+		return "0"
+	}
+	var parts []string
+	for _, c := range caps {
+		label := strings.ReplaceAll(c.Label, ":", "_")
+		parts = append(parts, fmt.Sprintf("%d:%d:%d:%s", capTypeToInt(c.Type), c.Pin, c.Extra, label))
+	}
+	return fmt.Sprintf("%d:%s", len(caps), strings.Join(parts, ":"))
+}
+
 // ── Per-gateway provision ─────────────────────────────────────────────────────
 
 func ProvisionNode(c *gin.Context) {
@@ -131,6 +174,15 @@ func ProvisionNode(c *gin.Context) {
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
+	}
+
+	// Marshal capabilities to JSON for DB storage
+	capsDB := ""
+	if len(req.CapabilitiesConfig) > 0 {
+		b, err := json.Marshal(req.CapabilitiesConfig)
+		if err == nil {
+			capsDB = string(b)
+		}
 	}
 
 	// Check conflict with another gateway of the same user
@@ -161,10 +213,16 @@ func ProvisionNode(c *gin.Context) {
 	if DB.Where("gateway_id = ? AND device_id = ?", gwID, req.DeviceID).First(&existing).Error == nil {
 		existing.APIKey = apiKey
 		existing.ConnectedAt = &now
+		if req.Name != "" {
+			existing.Name = req.Name
+		}
+		if len(req.CapabilitiesConfig) > 0 {
+			existing.CapabilitiesConfig = capsDB
+		}
 		DB.Save(&existing)
 		RemoveDiscoveredNode(gwID, req.DeviceID)
 
-		if err := SendProvision(gwID, req.DeviceID, apiKey, existing.DeviceType); err != nil {
+		if err := SendProvision(gwID, req.DeviceID, apiKey, existing.DeviceType, existing.Name, req.CapabilitiesConfig); err != nil {
 			c.JSON(http.StatusOK, gin.H{
 				"status":  "registered_but_offline",
 				"node":    existing,
@@ -186,7 +244,7 @@ func ProvisionNode(c *gin.Context) {
 	// Brand-new node — deferred provision: no DB record until telemetry arrives
 	RemoveDiscoveredNode(gwID, req.DeviceID)
 
-	if err := SendProvision(gwID, req.DeviceID, apiKey, 0); err != nil {
+	if err := SendProvision(gwID, req.DeviceID, apiKey, 0, req.Name, req.CapabilitiesConfig); err != nil {
 		c.JSON(http.StatusOK, gin.H{
 			"status":  "registered_but_offline",
 			"message": "Gateway is offline; provision key will be sent when gateway reconnects",
@@ -194,7 +252,7 @@ func ProvisionNode(c *gin.Context) {
 		return
 	}
 
-	addPendingProvision(req.DeviceID, gwID, apiKey, 0)
+	addPendingProvision(req.DeviceID, gwID, apiKey, 0, req.Name, capsDB)
 	LogAudit(c, "node_provisioning", "gateway", &gw.ID, fmt.Sprintf("Node %d provisioning sent (awaiting activation) on gateway: %s", req.DeviceID, gw.Name))
 
 	c.JSON(http.StatusOK, gin.H{
@@ -218,6 +276,15 @@ func ProvisionNodeToGateway(c *gin.Context) {
 	if err := DB.Where("id = ? AND user_id = ?", req.GatewayID, userID).First(&gw).Error; err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Gateway not found"})
 		return
+	}
+
+	// Marshal capabilities to JSON for DB storage
+	capDB := ""
+	if len(req.CapabilitiesConfig) > 0 {
+		b, err := json.Marshal(req.CapabilitiesConfig)
+		if err == nil {
+			capDB = string(b)
+		}
 	}
 
 	apiKey := generateNodeAPIKey()
@@ -248,10 +315,16 @@ func ProvisionNodeToGateway(c *gin.Context) {
 	if DB.Where("gateway_id = ? AND device_id = ?", req.GatewayID, req.DeviceID).First(&existing).Error == nil {
 		existing.APIKey = apiKey
 		existing.ConnectedAt = &now
+		if req.Name != "" {
+			existing.Name = req.Name
+		}
+		if len(req.CapabilitiesConfig) > 0 {
+			existing.CapabilitiesConfig = capDB
+		}
 		DB.Save(&existing)
 		RemoveDiscoveredNode(req.GatewayID, req.DeviceID)
 
-		if err := SendProvision(req.GatewayID, req.DeviceID, apiKey, existing.DeviceType); err != nil {
+		if err := SendProvision(req.GatewayID, req.DeviceID, apiKey, existing.DeviceType, existing.Name, req.CapabilitiesConfig); err != nil {
 			c.JSON(http.StatusOK, gin.H{
 				"status":  "registered_but_offline",
 				"node":    existing,
@@ -272,7 +345,7 @@ func ProvisionNodeToGateway(c *gin.Context) {
 	// Brand-new node — deferred provision
 	RemoveDiscoveredNode(req.GatewayID, req.DeviceID)
 
-	if err := SendProvision(req.GatewayID, req.DeviceID, apiKey, 0); err != nil {
+	if err := SendProvision(req.GatewayID, req.DeviceID, apiKey, 0, req.Name, req.CapabilitiesConfig); err != nil {
 		c.JSON(http.StatusOK, gin.H{
 			"status":  "registered_but_offline",
 			"message": "Gateway is offline; provision key will be sent when gateway reconnects",
@@ -280,7 +353,7 @@ func ProvisionNodeToGateway(c *gin.Context) {
 		return
 	}
 
-	addPendingProvision(req.DeviceID, req.GatewayID, apiKey, 0)
+	addPendingProvision(req.DeviceID, req.GatewayID, apiKey, 0, req.Name, capDB)
 	LogAudit(c, "node_provisioning", "gateway", &gw.ID, fmt.Sprintf("Node %d provisioning sent (awaiting activation) on gateway: %s", req.DeviceID, gw.Name))
 
 	c.JSON(http.StatusOK, gin.H{

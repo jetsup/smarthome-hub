@@ -73,3 +73,26 @@ func SaveWifiCredential(c *gin.Context) {
 
 	c.JSON(http.StatusCreated, cred)
 }
+
+func DeleteWifiCredential(c *gin.Context) {
+	userID := c.GetUint("userID")
+	gwID := c.Param("id")
+	credID := c.Param("credId")
+
+	var gw Gateway
+	if err := DB.Where("id = ? AND user_id = ?", gwID, userID).First(&gw).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Gateway not found"})
+		return
+	}
+
+	var cred WifiCredential
+	if err := DB.Where("id = ? AND gateway_id = ?", credID, gwID).First(&cred).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Credential not found"})
+		return
+	}
+
+	DB.Delete(&cred)
+	LogAudit(c, "wifi_credential_deleted", "gateway", &gwID, "WiFi credential deleted for SSID: "+cred.SSID)
+
+	c.JSON(http.StatusOK, gin.H{"status": "deleted"})
+}
