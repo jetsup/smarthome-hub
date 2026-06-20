@@ -50,12 +50,24 @@ func updateNodeStatus() {
 		if node.LastSeen.IsZero() {
 			continue
 		}
+
+		// Check if the node's gateway is online
+		var gw Gateway
+		gwOnline := false
+		if DB.First(&gw, "id = ?", node.GatewayID).Error == nil {
+			gwOnline = gw.IsOnline
+		}
+
 		state := NetworkRegistry[node.DeviceID]
-		if node.LastSeen.Before(cutoff) {
+		if node.LastSeen.Before(cutoff) || !gwOnline {
 			// Node is offline — remove from registry if present
 			if _, ok := NetworkRegistry[node.DeviceID]; ok {
 				delete(NetworkRegistry, node.DeviceID)
-				log.Printf("Node %d (%s) marked offline (last seen %s)", node.DeviceID, node.NodeID, node.LastSeen.Format(time.RFC3339))
+				if !gwOnline {
+					log.Printf("Node %d (%s) marked offline (gateway %s is offline)", node.DeviceID, node.NodeID, node.GatewayID)
+				} else {
+					log.Printf("Node %d (%s) marked offline (last seen %s)", node.DeviceID, node.NodeID, node.LastSeen.Format(time.RFC3339))
+				}
 			}
 		} else {
 			// Node is online — update registry

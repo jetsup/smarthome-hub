@@ -33,10 +33,11 @@ type Gateway struct {
 }
 
 type CapabilityConfig struct {
-	Type   string `json:"type"`
-	Pin    int    `json:"pin,omitempty"`
-	Extra  int    `json:"extra,omitempty"`
-	Label  string `json:"label,omitempty"`
+	Type   string  `json:"type"`
+	Pin    int     `json:"pin,omitempty"`
+	Extra  int     `json:"extra,omitempty"`
+	Label  string  `json:"label,omitempty"`
+	Value  *uint16 `json:"value,omitempty"`
 }
 
 type Node struct {

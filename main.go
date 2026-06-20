@@ -84,6 +84,9 @@ func main() {
 		// Send command to node (by hex nodeId)
 		api.POST("/nodes/:nodeId/command", hub.ControlNode)
 
+		// Update node capabilities
+		api.PUT("/nodes/:nodeId/capabilities", hub.UpdateNodeCapabilities)
+
 		// Device ping (updates LastSeen)
 		api.POST("/devices/:id/ping", hub.PingDevice)
 

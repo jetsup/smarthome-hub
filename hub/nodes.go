@@ -6,14 +6,67 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/gin-gonic/gin"
 )
 
+// pinValueStore tracks the last commanded value per pin for each device.
+var (
+	pvMu    sync.Mutex
+	pinVals = map[uint32]map[uint8]uint16{} // deviceID → pinNumber → value
+)
+
+func setPinValue(deviceID uint32, pin uint8, val uint16) {
+	pvMu.Lock()
+	defer pvMu.Unlock()
+	if pinVals[deviceID] == nil {
+		pinVals[deviceID] = map[uint8]uint16{}
+	}
+	pinVals[deviceID][pin] = val
+}
+
+func setPinValues(deviceID uint32, vals map[uint8]uint16) {
+	pvMu.Lock()
+	defer pvMu.Unlock()
+	pinVals[deviceID] = vals
+}
+
+func getPinValues(deviceID uint32) map[uint8]uint16 {
+	pvMu.Lock()
+	defer pvMu.Unlock()
+	m := pinVals[deviceID]
+	if m == nil {
+		return nil
+	}
+	cp := make(map[uint8]uint16, len(m))
+	for k, v := range m {
+		cp[k] = v
+	}
+	return cp
+}
+
 type NodeResponse struct {
 	Node
 	IsOnline bool `json:"isOnline"`
+}
+
+// NodeDetailResponse is returned by GetNode / GetNodeByDeviceID.
+// It parses CapabilitiesConfig from its JSON string into a proper array.
+type NodeDetailResponse struct {
+	NodeID             string             `json:"nodeId"`
+	GatewayID          string             `json:"gatewayId"`
+	DeviceID           uint32             `json:"deviceId"`
+	APIKey             string             `json:"apiKey,omitempty"`
+	DeviceType         uint8              `json:"deviceType"`
+	Name               string             `json:"name"`
+	CapabilitiesConfig []CapabilityConfig `json:"capabilitiesConfig"`
+	LastValue          uint16             `json:"value"`
+	LastSeen           time.Time          `json:"lastSeen"`
+	ConnectedAt        *time.Time         `json:"connectedAt"`
+	CreatedAt          time.Time          `json:"createdAt"`
+	IsOnline           bool               `json:"isOnline"`
 }
 
 type ProvisionRequest struct {
@@ -32,7 +85,8 @@ type CrossProvisionRequest struct {
 }
 
 type ControlRequest struct {
-	Value uint16 `json:"value"`
+	Value    uint16 `json:"value"`
+	Pin      *int   `json:"pin,omitempty"`
 }
 
 // ReportNode handles telemetry from a node. If the node has a pending provision,
@@ -91,6 +145,52 @@ func isNodeOnline(lastSeen time.Time) bool {
 	return IsNodeOnline(lastSeen)
 }
 
+func parseCapabilitiesConfig(s string) []CapabilityConfig {
+	if s == "" {
+		return nil
+	}
+	var caps []CapabilityConfig
+	if err := json.Unmarshal([]byte(s), &caps); err != nil {
+		return nil
+	}
+	return caps
+}
+
+func nodeDetailResponse(node Node) NodeDetailResponse {
+	gwOnline := true
+	var gw Gateway
+	if DB.First(&gw, "id = ?", node.GatewayID).Error == nil {
+		gwOnline = gw.IsOnline
+	}
+	online := isNodeOnline(node.LastSeen) && gwOnline
+
+	caps := parseCapabilitiesConfig(node.CapabilitiesConfig)
+	pv := getPinValues(node.DeviceID)
+	if pv != nil && caps != nil {
+		for i, c := range caps {
+			if v, ok := pv[uint8(c.Pin)]; ok {
+				v := v
+				caps[i].Value = &v
+			}
+		}
+	}
+
+	return NodeDetailResponse{
+		NodeID:             node.NodeID,
+		GatewayID:          node.GatewayID,
+		DeviceID:           node.DeviceID,
+		APIKey:             node.APIKey,
+		DeviceType:         node.DeviceType,
+		Name:               node.Name,
+		CapabilitiesConfig: caps,
+		LastValue:          node.LastValue,
+		LastSeen:           node.LastSeen,
+		ConnectedAt:        node.ConnectedAt,
+		CreatedAt:          node.CreatedAt,
+		IsOnline:           online,
+	}
+}
+
 func ListNodes(c *gin.Context) {
 	userID := c.GetUint("userID")
 	gwID := c.Param("id")
@@ -123,20 +223,22 @@ func capTypeToInt(typeStr string) int {
 	switch typeStr {
 	case "analogInput":
 		return 0
-	case "digitalInput":
+	case "analogOutput":
 		return 1
-	case "digitalOutput":
+	case "digitalInput":
 		return 2
-	case "relay":
+	case "digitalOutput":
 		return 3
-	case "irTx":
+	case "relay":
 		return 4
-	case "irRx":
+	case "irTx":
 		return 5
-	case "i2c":
+	case "irRx":
 		return 6
-	case "uart":
+	case "i2c":
 		return 7
+	case "uart":
+		return 8
 	default:
 		return 0
 	}
@@ -408,10 +510,7 @@ func GetNode(c *gin.Context) {
 
 	state, hasState := NetworkRegistry[node.DeviceID]
 
-	resp := NodeResponse{
-		Node:     node,
-		IsOnline: isNodeOnline(node.LastSeen),
-	}
+	resp := nodeDetailResponse(node)
 	if hasState {
 		resp.LastValue = state.Value
 	}
@@ -438,10 +537,7 @@ func GetNodeByDeviceID(c *gin.Context) {
 
 	state, hasState := NetworkRegistry[node.DeviceID]
 
-	resp := NodeResponse{
-		Node:     node,
-		IsOnline: isNodeOnline(node.LastSeen),
-	}
+	resp := nodeDetailResponse(node)
 	if hasState {
 		resp.LastValue = state.Value
 	}
@@ -468,7 +564,13 @@ func ControlNode(c *gin.Context) {
 		return
 	}
 
-	if err := SendCommandToGateway(node.GatewayID, node.DeviceID, 2, req.Value); err != nil {
+	if req.Pin != nil {
+		if err := SendPinCommandToGateway(node.GatewayID, node.DeviceID, uint8(*req.Pin), req.Value); err != nil {
+			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "Gateway is offline"})
+			return
+		}
+		setPinValue(node.DeviceID, uint8(*req.Pin), req.Value)
+	} else if err := SendCommandToGateway(node.GatewayID, node.DeviceID, 2, req.Value); err != nil {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "Gateway is offline"})
 		return
 	}
@@ -480,6 +582,51 @@ func ControlNode(c *gin.Context) {
 }
 
 // ── Ping ──────────────────────────────────────────────────────────────────────
+
+type UpdateCapabilitiesRequest struct {
+	CapabilitiesConfig []CapabilityConfig `json:"capabilitiesConfig"`
+}
+
+func UpdateNodeCapabilities(c *gin.Context) {
+	userID := c.GetUint("userID")
+	nodeID := c.Param("nodeId")
+
+	var node Node
+	if err := DB.Joins("JOIN gateways ON gateways.id = nodes.gateway_id").
+		Where("nodes.node_id = ? AND gateways.user_id = ?", nodeID, userID).
+		First(&node).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Node not found"})
+		return
+	}
+
+	var req UpdateCapabilitiesRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	b, err := json.Marshal(req.CapabilitiesConfig)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to marshal capabilities"})
+		return
+	}
+
+	DB.Model(&node).Update("capabilities_config", string(b))
+
+	// Re-send provision to the gateway to apply new capabilities
+	if err := SendProvision(node.GatewayID, node.DeviceID, node.APIKey, node.DeviceType, node.Name, req.CapabilitiesConfig); err != nil {
+		c.JSON(http.StatusOK, gin.H{
+			"status":  "updated_but_offline",
+			"message": "Gateway is offline; will be sent when gateway reconnects",
+		})
+		return
+	}
+
+	LogAudit(c, "node_capabilities_updated", "node", &node.NodeID,
+		fmt.Sprintf("Capabilities updated for node %s (%d)", node.NodeID, node.DeviceID))
+
+	c.JSON(http.StatusOK, gin.H{"status": "updated"})
+}
 
 func PingDevice(c *gin.Context) {
 	userID := c.GetUint("userID")

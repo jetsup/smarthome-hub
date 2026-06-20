@@ -208,6 +208,21 @@ func SendCommandToGateway(gatewayID string, deviceId uint32, msgType uint8, valu
 	return err
 }
 
+// SendPinCommandToGateway sends a per-pin command to a specific gateway.
+// Uses msgType=6 with pinIndex and value encoded in the 9-byte packet:
+//   byte 6 = (pinIndex << 4) | (value >> 8)
+//   byte 7 = value & 0xFF
+func SendPinCommandToGateway(gatewayID string, deviceId uint32, pinIndex uint8, value uint16) error {
+	conn := getTCPConn(gatewayID)
+	if conn == nil {
+		return fmt.Errorf("gateway %s is not connected", gatewayID)
+	}
+	buf := packPinCommand(deviceId, pinIndex, value)
+	log.Printf("SendPinCommand to gateway %s: device %d pin %d value %d", gatewayID, deviceId, pinIndex, value)
+	_, err := conn.Write(buf)
+	return err
+}
+
 // SendProvision sends a BB: provisioning command to a specific gateway.
 // Format: BB:deviceId:apiKey:gatewayId:deviceType:nodeName:capCount:type1:pin1:extra1:label1:...\n
 func SendProvision(gatewayID string, deviceId uint32, apiKey string, deviceType uint8, nodeName string, caps []CapabilityConfig) error {
@@ -241,6 +256,21 @@ func packCommand(deviceId uint32, msgType uint8, value uint16) []byte {
 	buf[1] = msgType
 	binary.LittleEndian.PutUint32(buf[2:6], deviceId)
 	binary.LittleEndian.PutUint16(buf[6:8], value)
+	calcXor := uint8(0)
+	for i := 0; i < 8; i++ {
+		calcXor ^= buf[i]
+	}
+	buf[8] = calcXor
+	return buf
+}
+
+func packPinCommand(deviceId uint32, pin uint8, value uint16) []byte {
+	buf := make([]byte, 9)
+	buf[0] = 0xAA
+	buf[1] = 6 // MSG_PIN_CMD
+	binary.LittleEndian.PutUint32(buf[2:6], deviceId)
+	buf[6] = pin
+	buf[7] = uint8(value)
 	calcXor := uint8(0)
 	for i := 0; i < 8; i++ {
 		calcXor ^= buf[i]
