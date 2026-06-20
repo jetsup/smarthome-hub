@@ -7,6 +7,7 @@ import (
 	"io"
 	"log"
 	"net"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -161,15 +162,53 @@ func handleGatewayConnection(gatewayID string, conn net.Conn, reader *bufio.Read
 			DB.Model(&Gateway{}).Where("id = ?", gatewayID).Update("last_seen", time.Now())
 			log.Printf("TEXT from gateway %s: %s", gatewayID, line)
 
-			// Parse ACK messages
-			if strings.HasPrefix(line, "ACK:") {
-				parts := strings.SplitN(line, ":", 3)
-				if len(parts) >= 3 {
-					ackType := parts[1]
-					ackDevice := parts[2]
-					log.Printf("ACK %s for device %s from gateway %s", ackType, ackDevice, gatewayID)
+		// Parse ACK messages
+		if strings.HasPrefix(line, "ACK:") {
+			parts := strings.SplitN(line, ":", 3)
+			if len(parts) >= 3 {
+				ackType := parts[1]
+				ackDevice := parts[2]
+				log.Printf("ACK %s for device %s from gateway %s", ackType, ackDevice, gatewayID)
+			}
+		}
+
+		// Parse credential sync from gateway — CREDS:<count>:<ssid1>:<pass1>:...
+		if strings.HasPrefix(line, "CREDS:") {
+			parts := strings.SplitN(line, ":", 4)
+			if len(parts) >= 2 {
+				countStr := parts[1]
+				rest := ""
+				if len(parts) >= 4 {
+					rest = parts[3]
+				} else if len(parts) >= 3 {
+					rest = parts[2]
+				}
+				count, err := strconv.Atoi(countStr)
+				if err == nil && count > 0 && rest != "" {
+					// Format after count: <ssid1>:<pass1>:<ssid2>:<pass2>:...
+					pairs := strings.Split(rest, ":")
+					saved := 0
+					// Clear old credentials for this gateway first
+					DB.Where("gateway_id = ?", gatewayID).Delete(&WifiCredential{})
+					for i := 0; i+1 < len(pairs) && i/2 < count; i += 2 {
+						ssid := pairs[i]
+						pass := ""
+						if i+1 < len(pairs) {
+							pass = pairs[i+1]
+						}
+						cred := WifiCredential{
+							GatewayID: gatewayID,
+							SSID:      ssid,
+							Password:  pass,
+						}
+						if err := DB.Create(&cred).Error; err == nil {
+							saved++
+						}
+					}
+					log.Printf("Synced %d/%d Wi-Fi credentials from gateway %s", saved, count, gatewayID)
 				}
 			}
+		}
 		}
 	}
 }

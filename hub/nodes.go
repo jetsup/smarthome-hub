@@ -136,6 +136,15 @@ func ReportNode(gatewayID string, deviceID uint32, value uint16) {
 		DeviceID: deviceID,
 		Value:    value,
 	}
+
+	// Store telemetry value as pin value for input capabilities
+	if caps := parseCapabilitiesConfig(node.CapabilitiesConfig); caps != nil {
+		for _, c := range caps {
+			if c.Type == "analogInput" || c.Type == "digitalInput" {
+				setPinValue(deviceID, uint8(c.Pin), value)
+			}
+		}
+	}
 }
 
 func isNodeOnline(lastSeen time.Time) bool {
