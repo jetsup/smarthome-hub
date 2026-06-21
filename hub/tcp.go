@@ -16,7 +16,32 @@ import (
 var (
 	tcpConnMap = make(map[string]net.Conn)
 	tcpConnMu  sync.Mutex
+
+	ackCh      = make(map[uint32]chan struct{})
+	ackChMu    sync.Mutex
 )
+
+// expectACK registers a channel that will be closed when an ACK:cmd:<deviceID> arrives.
+func expectACK(deviceID uint32) <-chan struct{} {
+	ch := make(chan struct{})
+	ackChMu.Lock()
+	ackCh[deviceID] = ch
+	ackChMu.Unlock()
+	return ch
+}
+
+// signalACK closes the channel for the given deviceID, unblocking any waiter.
+func signalACK(deviceID uint32) {
+	ackChMu.Lock()
+	ch, ok := ackCh[deviceID]
+	if ok {
+		delete(ackCh, deviceID)
+	}
+	ackChMu.Unlock()
+	if ok {
+		close(ch)
+	}
+}
 
 func getTCPConn(gatewayID string) net.Conn {
 	tcpConnMu.Lock()
@@ -34,6 +59,21 @@ func removeTCPConn(gatewayID string) {
 	tcpConnMu.Lock()
 	defer tcpConnMu.Unlock()
 	delete(tcpConnMap, gatewayID)
+}
+
+// clearACKsForGateway unblocks all pending ACK waiters for nodes on this gateway.
+// Called when a gateway disconnects unexpectedly so DeleteGateway doesn't hang.
+func clearACKsForGateway(gatewayID string) {
+	var nodes []Node
+	DB.Where("gateway_id = ?", gatewayID).Find(&nodes)
+	ackChMu.Lock()
+	for _, n := range nodes {
+		if ch, ok := ackCh[n.DeviceID]; ok {
+			delete(ackCh, n.DeviceID)
+			close(ch)
+		}
+	}
+	ackChMu.Unlock()
 }
 
 func StartTCPWorker(addr string) {
@@ -77,6 +117,9 @@ func StartTCPWorker(addr string) {
 		LogAudit(nil, "gateway_connected", "gateway", &gw.ID, "Gateway connected from "+conn.RemoteAddr().String())
 		log.Printf("Gateway %s (%s) authenticated — API key %s", gw.ID, gw.Name, maskKey(apiKey))
 
+		// Execute any pending actions for this gateway (e.g. queued deletions)
+		executePendingActions(gw.ID)
+
 		go handleGatewayConnection(gw.ID, conn, reader)
 	}
 }
@@ -89,6 +132,8 @@ func handleGatewayConnection(gatewayID string, conn net.Conn, reader *bufio.Read
 			removeTCPConn(gatewayID)
 			DB.Model(&Gateway{}).Where("id = ?", gatewayID).Update("is_online", false)
 			LogAudit(nil, "gateway_disconnected", "gateway", &gatewayID, "Gateway disconnected")
+			// Unblock any DeleteGateway that's waiting on ACKs from this gateway
+			clearACKsForGateway(gatewayID)
 		}
 	}()
 
@@ -162,13 +207,18 @@ func handleGatewayConnection(gatewayID string, conn net.Conn, reader *bufio.Read
 			DB.Model(&Gateway{}).Where("id = ?", gatewayID).Update("last_seen", time.Now())
 			log.Printf("TEXT from gateway %s: %s", gatewayID, line)
 
-		// Parse ACK messages
+		// Parse ACK messages and signal any waiting goroutines
 		if strings.HasPrefix(line, "ACK:") {
 			parts := strings.SplitN(line, ":", 3)
 			if len(parts) >= 3 {
 				ackType := parts[1]
 				ackDevice := parts[2]
 				log.Printf("ACK %s for device %s from gateway %s", ackType, ackDevice, gatewayID)
+				if ackType == "cmd" {
+					if devID, err := strconv.ParseUint(ackDevice, 10, 32); err == nil {
+						signalACK(uint32(devID))
+					}
+				}
 			}
 		}
 

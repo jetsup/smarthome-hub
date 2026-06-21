@@ -68,6 +68,27 @@ func CreateBinding(c *gin.Context) {
 		return
 	}
 
+	// Validate GPIO pins against ESP32 pinout
+	if errMsg := ValidateBindingPin(int(req.SourcePin), ""); errMsg != "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "sourcePin: " + errMsg})
+		return
+	}
+	if errMsg := ValidateBindingPin(int(req.TargetPin), ""); errMsg != "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "targetPin: " + errMsg})
+		return
+	}
+
+	// Reject duplicate binding
+	var existing int64
+	DB.Model(&CapabilityBinding{}).
+		Where("gateway_id = ? AND source_device_id = ? AND source_pin = ? AND target_device_id = ? AND target_pin = ?",
+			gatewayID, req.SourceDeviceID, req.SourcePin, req.TargetDeviceID, req.TargetPin).
+		Count(&existing)
+	if existing > 0 {
+		c.JSON(http.StatusConflict, gin.H{"error": "Duplicate binding"})
+		return
+	}
+
 	binding := CapabilityBinding{
 		GatewayID:      gatewayID,
 		SourceDeviceID: req.SourceDeviceID,
@@ -114,9 +135,10 @@ func DeleteBinding(c *gin.Context) {
 
 // processBindings checks for capability bindings that originate from the given
 // device+pin and forwards the telemetry value to each target via MSG_PIN_CMD.
-func processBindings(gatewayID string, deviceID uint32, value uint16) {
+func processBindings(gatewayID string, deviceID uint32, sourcePin uint8, value uint16) {
 	var bindings []CapabilityBinding
-	DB.Where("gateway_id = ? AND source_device_id = ?", gatewayID, deviceID).Find(&bindings)
+	DB.Where("gateway_id = ? AND source_device_id = ? AND source_pin = ?",
+		gatewayID, deviceID, sourcePin).Find(&bindings)
 	for _, b := range bindings {
 		b := b
 		go func() {

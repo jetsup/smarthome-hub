@@ -29,7 +29,7 @@ type Gateway struct {
 	APIKeyAssignedAt *time.Time `json:"apiKeyAssignedAt"`
 	CreatedAt        time.Time  `json:"createdAt"`
 	UpdatedAt        time.Time  `json:"updatedAt"`
-	Nodes            []Node     `gorm:"foreignKey:GatewayID" json:"nodes,omitempty"`
+	Nodes            []Node     `gorm:"foreignKey:GatewayID;constraint:OnDelete:CASCADE" json:"nodes,omitempty"`
 }
 
 type CapabilityConfig struct {
@@ -76,13 +76,25 @@ type AuditLog struct {
 	CreatedAt  time.Time `json:"createdAt"`
 }
 
+// PendingAction queues gateway/node deletion jobs for execution when the target comes online.
+type PendingAction struct {
+	ID        uint      `gorm:"primaryKey" json:"id"`
+	GatewayID string    `gorm:"index;not null;size:16" json:"gatewayId"`
+	Action    string    `gorm:"size:50;not null" json:"action"`   // "delete_gateway"
+	TargetID  string    `gorm:"size:16;not null" json:"targetId"` // gateway ID to delete
+	Status    string    `gorm:"size:20;default:'pending'" json:"status"` // pending | completed | failed
+	Error     string    `gorm:"type:text" json:"error,omitempty"`
+	CreatedAt time.Time `json:"createdAt"`
+	UpdatedAt time.Time `json:"updatedAt"`
+}
+
 type CapabilityBinding struct {
 	ID             uint      `gorm:"primaryKey" json:"id"`
-	GatewayID      string    `gorm:"index:idx_binding_source;not null;size:16" json:"gatewayId"`
-	SourceDeviceID uint32    `gorm:"index:idx_binding_source;not null" json:"sourceDeviceId"`
-	SourcePin      uint8     `gorm:"not null" json:"sourcePin"`
-	TargetDeviceID uint32    `gorm:"not null" json:"targetDeviceId"`
-	TargetPin      uint8     `gorm:"not null" json:"targetPin"`
+	GatewayID      string    `gorm:"index:idx_binding_source;uniqueIndex:idx_unique_binding;not null;size:16" json:"gatewayId"`
+	SourceDeviceID uint32    `gorm:"index:idx_binding_source;uniqueIndex:idx_unique_binding;not null" json:"sourceDeviceId"`
+	SourcePin      uint8     `gorm:"uniqueIndex:idx_unique_binding;not null" json:"sourcePin"`
+	TargetDeviceID uint32    `gorm:"uniqueIndex:idx_unique_binding;not null" json:"targetDeviceId"`
+	TargetPin      uint8     `gorm:"uniqueIndex:idx_unique_binding;not null" json:"targetPin"`
 	CreatedAt      time.Time `json:"createdAt"`
 }
 
@@ -224,5 +236,12 @@ func GetAllDiscoveredNodes() []DiscoveredNodeInfo {
 // ── Auto-migrate all models ──────────────────────────────────────────────────
 
 func AutoMigrate(db *gorm.DB) error {
-	return db.AutoMigrate(&User{}, &Gateway{}, &Node{}, &AuditLog{}, &WifiCredential{}, &CapabilityBinding{})
+	if err := db.AutoMigrate(&User{}, &Gateway{}, &Node{}, &AuditLog{}, &WifiCredential{}, &CapabilityBinding{}, &PendingAction{}); err != nil {
+		return err
+	}
+	// Create unique composite index for bindings (no-op if already exists)
+	if !db.Migrator().HasIndex(&CapabilityBinding{}, "idx_unique_binding") {
+		db.Migrator().CreateIndex(&CapabilityBinding{}, "idx_unique_binding")
+	}
+	return nil
 }

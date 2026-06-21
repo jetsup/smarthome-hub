@@ -33,6 +33,12 @@ func setPinValues(deviceID uint32, vals map[uint8]uint16) {
 	pinVals[deviceID] = vals
 }
 
+func clearPinValues(deviceID uint32) {
+	pvMu.Lock()
+	defer pvMu.Unlock()
+	delete(pinVals, deviceID)
+}
+
 func getPinValues(deviceID uint32) map[uint8]uint16 {
 	pvMu.Lock()
 	defer pvMu.Unlock()
@@ -138,16 +144,16 @@ func ReportNode(gatewayID string, deviceID uint32, value uint16) {
 	}
 
 	// Store telemetry value as pin value for input capabilities
+	// and forward each input pin's value to any bound output target.
 	if caps := parseCapabilitiesConfig(node.CapabilitiesConfig); caps != nil {
 		for _, c := range caps {
 			if c.Type == "analogInput" || c.Type == "digitalInput" {
-				setPinValue(deviceID, uint8(c.Pin), value)
+				pin := uint8(c.Pin)
+				setPinValue(deviceID, pin, value)
+				processBindings(gatewayID, deviceID, pin, value)
 			}
 		}
 	}
-
-	// Forward telemetry to bound output capabilities
-	processBindings(gatewayID, deviceID, value)
 }
 
 func isNodeOnline(lastSeen time.Time) bool {
@@ -577,11 +583,16 @@ func ControlNode(c *gin.Context) {
 	}
 
 	if req.Pin != nil {
-		if err := SendPinCommandToGateway(node.GatewayID, node.DeviceID, uint8(*req.Pin), req.Value); err != nil {
+		pin := *req.Pin
+		if errMsg := ValidateBindingPin(pin, ""); errMsg != "" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "pin: " + errMsg})
+			return
+		}
+		if err := SendPinCommandToGateway(node.GatewayID, node.DeviceID, uint8(pin), req.Value); err != nil {
 			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "Gateway is offline"})
 			return
 		}
-		setPinValue(node.DeviceID, uint8(*req.Pin), req.Value)
+		setPinValue(node.DeviceID, uint8(pin), req.Value)
 	} else if err := SendCommandToGateway(node.GatewayID, node.DeviceID, 2, req.Value); err != nil {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "Gateway is offline"})
 		return

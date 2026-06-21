@@ -3,6 +3,7 @@ package hub
 import (
 	"crypto/rand"
 	"encoding/hex"
+	"log"
 	"net/http"
 	"time"
 
@@ -193,11 +194,54 @@ func DeleteGateway(c *gin.Context) {
 		return
 	}
 
-	result := DB.Where("id = ? AND user_id = ?", id, userID).Delete(&Gateway{})
-	if result.RowsAffected == 0 {
+	// Verify the gateway belongs to this user
+	var gw Gateway
+	if err := DB.Where("id = ? AND user_id = ?", id, userID).First(&gw).Error; err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Gateway not found"})
 		return
 	}
+
+	conn := getTCPConn(id)
+	if conn == nil {
+		// Gateway is offline — queue a pending action to execute when it reconnects
+		action := PendingAction{
+			GatewayID: id,
+			Action:    "delete_gateway",
+			TargetID:  id,
+			Status:    "pending",
+		}
+		if err := DB.Create(&action).Error; err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create pending action"})
+			return
+		}
+		LogAudit(c, "gateway_delete_queued", "gateway", &id, "Gateway deletion queued (offline): "+gw.Name)
+		c.JSON(http.StatusAccepted, gin.H{"status": "queued", "message": "Gateway is offline; deletion will execute when it reconnects"})
+		return
+	}
+
+	// Gateway is online — send reset command to every node and wait for ACK
+	var nodes []Node
+	DB.Where("gateway_id = ?", id).Find(&nodes)
+	for _, n := range nodes {
+		ch := expectACK(n.DeviceID)
+		if err := SendCommandToGateway(id, n.DeviceID, 2, 99); err != nil {
+			log.Printf("Failed to send reset to node %d: %v", n.DeviceID, err)
+			signalACK(n.DeviceID)
+		}
+		select {
+		case <-ch:
+		case <-time.After(5 * time.Second):
+			log.Printf("Timeout waiting for ACK from node %d on gateway %s", n.DeviceID, id)
+		}
+		delete(NetworkRegistry, n.DeviceID)
+		clearPinValues(n.DeviceID)
+	}
+	removeTCPConn(id)
+
+	DB.Where("gateway_id = ?", id).Delete(&CapabilityBinding{})
+	DB.Where("gateway_id = ?", id).Delete(&WifiCredential{})
+	DB.Where("gateway_id = ?", id).Delete(&Node{})
+	DB.Delete(&gw)
 
 	LogAudit(c, "gateway_deleted", "gateway", &id, "Gateway deleted")
 

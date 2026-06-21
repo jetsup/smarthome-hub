@@ -89,6 +89,10 @@ func main() {
 		// Send command to node (by hex nodeId)
 		api.POST("/nodes/:nodeId/command", hub.ControlNode)
 
+		// Pending actions (queued gateway deletion when offline)
+		api.GET("/pending-actions", hub.ListPendingActions)
+		api.DELETE("/pending-actions/:actionId", hub.DeletePendingAction)
+
 		// Update node capabilities
 		api.PUT("/nodes/:nodeId/capabilities", hub.UpdateNodeCapabilities)
 
