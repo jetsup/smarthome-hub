@@ -76,6 +76,16 @@ type AuditLog struct {
 	CreatedAt  time.Time `json:"createdAt"`
 }
 
+type CapabilityBinding struct {
+	ID             uint      `gorm:"primaryKey" json:"id"`
+	GatewayID      string    `gorm:"index:idx_binding_source;not null;size:16" json:"gatewayId"`
+	SourceDeviceID uint32    `gorm:"index:idx_binding_source;not null" json:"sourceDeviceId"`
+	SourcePin      uint8     `gorm:"not null" json:"sourcePin"`
+	TargetDeviceID uint32    `gorm:"not null" json:"targetDeviceId"`
+	TargetPin      uint8     `gorm:"not null" json:"targetPin"`
+	CreatedAt      time.Time `json:"createdAt"`
+}
+
 // ── Device type constants ─────────────────────────────────────────────────────
 const (
 	DeviceTypeUnknown  = 0
@@ -214,5 +224,5 @@ func GetAllDiscoveredNodes() []DiscoveredNodeInfo {
 // ── Auto-migrate all models ──────────────────────────────────────────────────
 
 func AutoMigrate(db *gorm.DB) error {
-	return db.AutoMigrate(&User{}, &Gateway{}, &Node{}, &AuditLog{}, &WifiCredential{})
+	return db.AutoMigrate(&User{}, &Gateway{}, &Node{}, &AuditLog{}, &WifiCredential{}, &CapabilityBinding{})
 }

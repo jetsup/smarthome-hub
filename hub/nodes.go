@@ -145,6 +145,9 @@ func ReportNode(gatewayID string, deviceID uint32, value uint16) {
 			}
 		}
 	}
+
+	// Forward telemetry to bound output capabilities
+	processBindings(gatewayID, deviceID, value)
 }
 
 func isNodeOnline(lastSeen time.Time) bool {

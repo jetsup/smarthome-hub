@@ -64,6 +64,11 @@ func main() {
 		api.POST("/gateways/:id/wifi", hub.SaveWifiCredential)
 		api.DELETE("/gateways/:id/wifi/:credId", hub.DeleteWifiCredential)
 
+		// Capability bindings (input → output forwarding)
+		api.GET("/gateways/:id/bindings", hub.ListBindings)
+		api.POST("/gateways/:id/bindings", hub.CreateBinding)
+		api.DELETE("/bindings/:bindingId", hub.DeleteBinding)
+
 		// Node discovery & provisioning
 		api.POST("/gateways/:id/scan", hub.StartScan)
 		api.GET("/gateways/:id/discovered", hub.GetDiscoveredNodes)

@@ -2,3 +2,4 @@ build
 *.temp
 .env
 .vscode/settings.json
+AGENTS.md
