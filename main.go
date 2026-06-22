@@ -3,8 +3,8 @@ package main
 import (
 	"net/http"
 	"path/filepath"
-	"strconv"
 	"smarthome-hub/hub"
+	"strconv"
 
 	"github.com/gin-contrib/cors"
 	"github.com/gin-gonic/gin"
