@@ -588,11 +588,11 @@ func ControlNode(c *gin.Context) {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "pin: " + errMsg})
 			return
 		}
-		if err := SendPinCommandToGateway(node.GatewayID, node.DeviceID, uint8(pin), req.Value); err != nil {
-			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "Gateway is offline"})
-			return
-		}
+		// Update pinValStore first so polling clients see the value immediately
 		setPinValue(node.DeviceID, uint8(pin), req.Value)
+		if err := SendPinCommandToGateway(node.GatewayID, node.DeviceID, uint8(pin), req.Value); err != nil {
+			fmt.Printf("ControlNode: gateway %s offline, pin value stored locally\n", node.GatewayID)
+		}
 	} else if err := SendCommandToGateway(node.GatewayID, node.DeviceID, 2, req.Value); err != nil {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "Gateway is offline"})
 		return
@@ -600,6 +600,183 @@ func ControlNode(c *gin.Context) {
 
 	LogAudit(c, "node_command", "node", &node.NodeID,
 		fmt.Sprintf("Command value=%d sent to node %s (%d)", req.Value, node.NodeID, node.DeviceID))
+
+	c.JSON(http.StatusOK, gin.H{"status": "transmitted", "nodeId": node.NodeID, "value": req.Value})
+}
+
+// ── HMI Unauthenticated Handlers ──────────────────────────────────────────────
+
+type HMIDeviceInfo struct {
+	DeviceID      uint32             `json:"deviceId"`
+	Name          string             `json:"name"`
+	IsOnline      bool               `json:"isOnline"`
+	IsProvisioned bool               `json:"isProvisioned"`
+	Value         uint16             `json:"value"`
+	Capabilities  []CapabilityConfig `json:"capabilitiesConfig"`
+}
+
+func HMIListAllNodes(c *gin.Context) {
+	gwID := c.Param("id")
+
+	// Resolve decimal announce ID → hex DB ID if needed
+	if id, err := strconv.ParseUint(gwID, 10, 32); err == nil {
+		if mappedId := getGatewayIDByAnnounceID(uint32(id)); mappedId != "" {
+			gwID = mappedId
+		}
+	}
+
+	// Get provisioned nodes
+	var nodes []Node
+	DB.Where("gateway_id = ? AND connected_at IS NOT NULL", gwID).Find(&nodes)
+
+	resp := make([]HMIDeviceInfo, 0, len(nodes)+10)
+
+	for _, n := range nodes {
+		caps := parseCapabilitiesConfig(n.CapabilitiesConfig)
+		pv := getPinValues(n.DeviceID)
+		if pv != nil && caps != nil {
+			for i, c := range caps {
+				if v, ok := pv[uint8(c.Pin)]; ok {
+					v := v
+					caps[i].Value = &v
+				}
+			}
+		}
+		resp = append(resp, HMIDeviceInfo{
+			DeviceID:      n.DeviceID,
+			Name:          n.Name,
+			IsOnline:      isNodeOnline(n.LastSeen),
+			IsProvisioned: true,
+			Value:         n.LastValue,
+			Capabilities:  caps,
+		})
+	}
+
+	// Get discovered (unprovisioned) nodes
+	discovered := GetDiscoveredNodeSet(gwID)
+	if discovered != nil {
+		provisionedIDs := make(map[uint32]bool)
+		for _, n := range nodes {
+			provisionedIDs[n.DeviceID] = true
+		}
+		for devID := range discovered {
+			if !provisionedIDs[devID] {
+				resp = append(resp, HMIDeviceInfo{
+					DeviceID:      devID,
+					Name:          "Device " + strconv.FormatUint(uint64(devID), 10),
+					IsOnline:      false,
+					IsProvisioned: false,
+					Value:         0,
+				})
+			}
+		}
+	}
+
+	c.JSON(http.StatusOK, resp)
+}
+
+func HMIListGateways(c *gin.Context) {
+	var gateways []Gateway
+	DB.Find(&gateways)
+
+	type HmiGateway struct {
+		ID       string `json:"id"`
+		Name     string `json:"name"`
+		IsOnline bool   `json:"isOnline"`
+	}
+
+	resp := make([]HmiGateway, 0, len(gateways))
+	for _, g := range gateways {
+		resp = append(resp, HmiGateway{
+			ID:       g.ID,
+			Name:     g.Name,
+			IsOnline: g.IsOnline,
+		})
+	}
+	c.JSON(http.StatusOK, resp)
+}
+
+func HMIListNodes(c *gin.Context) {
+	gwID := c.Param("id")
+	if gwID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid gateway ID"})
+		return
+	}
+
+	var nodes []Node
+	DB.Where("gateway_id = ? AND connected_at IS NOT NULL", gwID).Find(&nodes)
+
+	resp := make([]NodeResponse, 0, len(nodes))
+	for _, n := range nodes {
+		resp = append(resp, NodeResponse{
+			Node:     n,
+			IsOnline: isNodeOnline(n.LastSeen),
+		})
+	}
+
+	c.JSON(http.StatusOK, resp)
+}
+
+func HMIGetNodeDetail(c *gin.Context) {
+	deviceIDStr := c.Param("deviceId")
+
+	deviceID, err := strconv.ParseUint(deviceIDStr, 10, 32)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid device ID"})
+		return
+	}
+
+	var node Node
+	if err := DB.Where("device_id = ?", uint32(deviceID)).First(&node).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Node not found"})
+		return
+	}
+
+	state, hasState := NetworkRegistry[node.DeviceID]
+
+	resp := nodeDetailResponse(node)
+	if hasState {
+		resp.LastValue = state.Value
+	}
+	c.JSON(http.StatusOK, resp)
+}
+
+func HMIControlNode(c *gin.Context) {
+	deviceIDStr := c.Param("deviceId")
+
+	deviceID, err := strconv.ParseUint(deviceIDStr, 10, 32)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid device ID"})
+		return
+	}
+
+	var node Node
+	if err := DB.Where("device_id = ?", uint32(deviceID)).First(&node).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Node not found"})
+		return
+	}
+
+	var req ControlRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	if req.Pin != nil {
+		pin := *req.Pin
+		if errMsg := ValidateBindingPin(pin, ""); errMsg != "" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "pin: " + errMsg})
+			return
+		}
+		// Update pinValStore first so polling clients see the value immediately
+		setPinValue(node.DeviceID, uint8(pin), req.Value)
+		if err := SendPinCommandToGateway(node.GatewayID, node.DeviceID, uint8(pin), req.Value); err != nil {
+			fmt.Printf("HMIControlNode: gateway %s offline, pin value stored locally\n", node.GatewayID)
+		}
+	} else if err := SendCommandToGateway(node.GatewayID, node.DeviceID, 2, req.Value); err != nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "Gateway is offline"})
+		return
+	}
 
 	c.JSON(http.StatusOK, gin.H{"status": "transmitted", "nodeId": node.NodeID, "value": req.Value})
 }

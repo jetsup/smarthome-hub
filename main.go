@@ -43,6 +43,25 @@ func main() {
 		auth.POST("/refresh", hub.RefreshToken)
 	}
 
+	// ── Pairing routes (no auth — time-limited 6-digit codes on local network) ─
+
+	pair := r.Group("/api/pair")
+	{
+		pair.POST("/request", hub.HandlePairRequest)
+		pair.GET("/code/:gatewayId", hub.HandleGetPairCode)
+		pair.POST("/verify", hub.HandlePairVerify)
+	}
+
+	// ── HMI routes (no auth — local-only, paired gateways) ──────────────────
+	hmi := r.Group("/api/hmi")
+	{
+		hmi.GET("/gateways", hub.HMIListGateways)
+		hmi.GET("/gateways/:id/all-nodes", hub.HMIListAllNodes)
+		hmi.GET("/gateways/:id/nodes", hub.HMIListNodes)
+		hmi.GET("/nodes/:deviceId", hub.HMIGetNodeDetail)
+		hmi.POST("/nodes/:deviceId/command", hub.HMIControlNode)
+	}
+
 	// ── Authenticated user routes ────────────────────────────────────────────
 
 	api := r.Group("/api")

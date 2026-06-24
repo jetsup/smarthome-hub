@@ -17,9 +17,24 @@ var (
 	tcpConnMap = make(map[string]net.Conn)
 	tcpConnMu  sync.Mutex
 
-	ackCh      = make(map[uint32]chan struct{})
-	ackChMu    sync.Mutex
+	ackCh         = make(map[uint32]chan struct{})
+	ackChMu       sync.Mutex
+
+	announceIDMap = make(map[uint32]string)
+	announceIDMu  sync.RWMutex
 )
+
+func setAnnounceIDMap(announceID uint32, gatewayID string) {
+	announceIDMu.Lock()
+	defer announceIDMu.Unlock()
+	announceIDMap[announceID] = gatewayID
+}
+
+func getGatewayIDByAnnounceID(announceID uint32) string {
+	announceIDMu.RLock()
+	defer announceIDMu.RUnlock()
+	return announceIDMap[announceID]
+}
 
 // expectACK registers a channel that will be closed when an ACK:cmd:<deviceID> arrives.
 func expectACK(deviceID uint32) <-chan struct{} {
@@ -219,6 +234,15 @@ func handleGatewayConnection(gatewayID string, conn net.Conn, reader *bufio.Read
 						signalACK(uint32(devID))
 					}
 				}
+			}
+		}
+
+		// Parse announce ID from gateway — GWID:<decimal_id>
+		if strings.HasPrefix(line, "GWID:") {
+			idStr := strings.TrimPrefix(line, "GWID:")
+			if id, err := strconv.ParseUint(idStr, 10, 32); err == nil {
+				setAnnounceIDMap(uint32(id), gatewayID)
+				log.Printf("Gateway %s announce ID: %d", gatewayID, id)
 			}
 		}
 
