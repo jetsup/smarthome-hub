@@ -139,6 +139,11 @@ func processBindings(gatewayID string, deviceID uint32, sourcePin uint8, value u
 	var bindings []CapabilityBinding
 	DB.Where("gateway_id = ? AND source_device_id = ? AND source_pin = ?",
 		gatewayID, deviceID, sourcePin).Find(&bindings)
+	// Analog inputs report 12-bit ADC readings (0-4095) but pin commands are
+	// 8-bit; scale so large readings don't wrap around.
+	if value > 255 {
+		value = uint16(uint32(value) * 255 / 4095)
+	}
 	for _, b := range bindings {
 		b := b
 		go func() {

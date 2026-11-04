@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"gorm.io/gorm"
 )
 
 // pinValueStore tracks the last commanded value per pin for each device.
@@ -73,6 +74,7 @@ type NodeDetailResponse struct {
 	ConnectedAt        *time.Time         `json:"connectedAt"`
 	CreatedAt          time.Time          `json:"createdAt"`
 	IsOnline           bool               `json:"isOnline"`
+	HmiID              *uint              `json:"hmiId"` // the one display this node is shown on
 }
 
 type ProvisionRequest struct {
@@ -90,18 +92,65 @@ type CrossProvisionRequest struct {
 	CapabilitiesConfig []CapabilityConfig `json:"capabilitiesConfig,omitempty"`
 }
 
+// ResetCommandValue is the whole-node command value the node firmware treats as
+// a factory reset. It is reserved for internal use (disconnect / gateway delete).
+const ResetCommandValue = 99
+
 type ControlRequest struct {
-	Value    uint16 `json:"value"`
-	Pin      *int   `json:"pin,omitempty"`
+	Value uint16 `json:"value"`
+	Pin   *int   `json:"pin,omitempty"`
 }
 
 // ReportNode handles telemetry from a node. If the node has a pending provision,
 // the DB record is created on first telemetry (deferred activation).
+// telemetryCache avoids a DB round-trip (and write) for every telemetry frame:
+// nodes may report many times per second, the DB only needs ~1 write / 2 s.
+type telemetryEntry struct {
+	node      Node
+	fetched   time.Time
+	lastWrite time.Time
+	lastValue uint16
+}
+
+var (
+	telemetryCache   = map[uint32]*telemetryEntry{}
+	telemetryCacheMu sync.Mutex
+)
+
+const (
+	telemetryNodeTTL    = 3 * time.Second
+	telemetryWriteEvery = 2 * time.Second
+)
+
+func invalidateTelemetryCache(deviceID uint32) {
+	telemetryCacheMu.Lock()
+	delete(telemetryCache, deviceID)
+	telemetryCacheMu.Unlock()
+}
+
 func ReportNode(gatewayID string, deviceID uint32, value uint16) {
 	var node Node
-	result := DB.Where("gateway_id = ? AND device_id = ?", gatewayID, deviceID).First(&node)
+	var result *gorm.DB
 
-	if result.Error != nil {
+	telemetryCacheMu.Lock()
+	ent := telemetryCache[deviceID]
+	cached := ent != nil && ent.node.GatewayID == gatewayID && time.Since(ent.fetched) < telemetryNodeTTL
+	if cached {
+		node = ent.node
+	}
+	telemetryCacheMu.Unlock()
+
+	if !cached {
+		result = DB.Where("gateway_id = ? AND device_id = ?", gatewayID, deviceID).First(&node)
+	}
+
+	if !cached && result.Error == nil {
+		telemetryCacheMu.Lock()
+		telemetryCache[deviceID] = &telemetryEntry{node: node, fetched: time.Now(), lastValue: value}
+		telemetryCacheMu.Unlock()
+	}
+
+	if !cached && result.Error != nil {
 		// No DB record yet — check for a pending provision
 		p := consumePendingProvision(deviceID)
 		if p == nil {
@@ -120,28 +169,38 @@ func ReportNode(gatewayID string, deviceID uint32, value uint16) {
 			LastValue:          value,
 			LastSeen:           now,
 			ConnectedAt:        &now,
+			HmiID:              defaultHmiFor(gatewayID),
 		}
 		DB.Create(&node)
-		NetworkRegistry[deviceID] = DeviceState{
-			DeviceID: deviceID,
-			Value:    value,
-		}
+		registrySet(DeviceState{DeviceID: deviceID, Value: value})
 		RemoveDiscoveredNode(gatewayID, deviceID)
 		LogAudit(nil, "node_activated", "gateway", &gatewayID,
 			fmt.Sprintf("Node %d (%s) activated on gateway %s via deferred provision", deviceID, node.NodeID, gatewayID))
 		return
 	}
 
-	// Existing node — update telemetry
-	DB.Model(&node).Updates(map[string]interface{}{
-		"last_value": value,
-		"last_seen":  time.Now(),
-	})
-
-	NetworkRegistry[deviceID] = DeviceState{
-		DeviceID: deviceID,
-		Value:    value,
+	// Existing node — persist at most every telemetryWriteEvery (or on a changed value
+	// once the window has passed); in-memory state below is always updated.
+	telemetryCacheMu.Lock()
+	ent = telemetryCache[deviceID]
+	if ent == nil {
+		ent = &telemetryEntry{node: node, fetched: time.Now()}
+		telemetryCache[deviceID] = ent
 	}
+	doWrite := time.Since(ent.lastWrite) >= telemetryWriteEvery
+	if doWrite {
+		ent.lastWrite = time.Now()
+	}
+	ent.lastValue = value
+	telemetryCacheMu.Unlock()
+	if doWrite {
+		DB.Model(&node).Updates(map[string]interface{}{
+			"last_value": value,
+			"last_seen":  time.Now(),
+		})
+	}
+
+	registrySet(DeviceState{DeviceID: deviceID, Value: value})
 
 	// Store telemetry value as pin value for input capabilities
 	// and forward each input pin's value to any bound output target.
@@ -206,6 +265,7 @@ func nodeDetailResponse(node Node) NodeDetailResponse {
 		ConnectedAt:        node.ConnectedAt,
 		CreatedAt:          node.CreatedAt,
 		IsOnline:           online,
+		HmiID:              node.HmiID,
 	}
 }
 
@@ -501,12 +561,13 @@ func DisconnectNode(c *gin.Context) {
 		return
 	}
 
+	invalidateTelemetryCache(uint32(deviceID))
 	if err := DB.Where("gateway_id = ? AND device_id = ?", gwID, deviceID).Delete(&Node{}).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to disconnect node"})
 		return
 	}
 
-	SendCommandToGateway(gwID, uint32(deviceID), 2, 99)
+	SendCommandToGateway(gwID, uint32(deviceID), 2, ResetCommandValue)
 
 	LogAudit(c, "node_disconnected", "gateway", &gw.ID, fmt.Sprintf("Node %d disconnected from gateway: %s", deviceID, gw.Name))
 	c.JSON(http.StatusOK, gin.H{"status": "disconnected", "deviceId": deviceID})
@@ -526,7 +587,7 @@ func GetNode(c *gin.Context) {
 		return
 	}
 
-	state, hasState := NetworkRegistry[node.DeviceID]
+	state, hasState := registryGet(node.DeviceID)
 
 	resp := nodeDetailResponse(node)
 	if hasState {
@@ -553,7 +614,7 @@ func GetNodeByDeviceID(c *gin.Context) {
 		return
 	}
 
-	state, hasState := NetworkRegistry[node.DeviceID]
+	state, hasState := registryGet(node.DeviceID)
 
 	resp := nodeDetailResponse(node)
 	if hasState {
@@ -593,6 +654,9 @@ func ControlNode(c *gin.Context) {
 		if err := SendPinCommandToGateway(node.GatewayID, node.DeviceID, uint8(pin), req.Value); err != nil {
 			fmt.Printf("ControlNode: gateway %s offline, pin value stored locally\n", node.GatewayID)
 		}
+	} else if req.Value == ResetCommandValue {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "value 99 is reserved"})
+		return
 	} else if err := SendCommandToGateway(node.GatewayID, node.DeviceID, 2, req.Value); err != nil {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "Gateway is offline"})
 		return
@@ -616,18 +680,13 @@ type HMIDeviceInfo struct {
 }
 
 func HMIListAllNodes(c *gin.Context) {
-	gwID := c.Param("id")
+	// The HMI token is scoped to one gateway; the path id is ignored.
+	gwID := c.GetString("hmiGatewayID")
+	hmiID := c.GetUint("hmiID")
 
-	// Resolve decimal announce ID → hex DB ID if needed
-	if id, err := strconv.ParseUint(gwID, 10, 32); err == nil {
-		if mappedId := getGatewayIDByAnnounceID(uint32(id)); mappedId != "" {
-			gwID = mappedId
-		}
-	}
-
-	// Get provisioned nodes
+	// Get provisioned nodes — only the ones assigned to THIS display.
 	var nodes []Node
-	DB.Where("gateway_id = ? AND connected_at IS NOT NULL", gwID).Find(&nodes)
+	DB.Where("gateway_id = ? AND hmi_id = ? AND connected_at IS NOT NULL", gwID, hmiID).Find(&nodes)
 
 	resp := make([]HMIDeviceInfo, 0, len(nodes)+10)
 
@@ -697,14 +756,10 @@ func HMIListGateways(c *gin.Context) {
 }
 
 func HMIListNodes(c *gin.Context) {
-	gwID := c.Param("id")
-	if gwID == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid gateway ID"})
-		return
-	}
+	gwID := c.GetString("hmiGatewayID")
 
 	var nodes []Node
-	DB.Where("gateway_id = ? AND connected_at IS NOT NULL", gwID).Find(&nodes)
+	DB.Where("gateway_id = ? AND hmi_id = ? AND connected_at IS NOT NULL", gwID, c.GetUint("hmiID")).Find(&nodes)
 
 	resp := make([]NodeResponse, 0, len(nodes))
 	for _, n := range nodes {
@@ -727,12 +782,14 @@ func HMIGetNodeDetail(c *gin.Context) {
 	}
 
 	var node Node
-	if err := DB.Where("device_id = ?", uint32(deviceID)).First(&node).Error; err != nil {
+	if err := DB.Where("device_id = ? AND gateway_id = ? AND hmi_id = ?", uint32(deviceID), c.GetString("hmiGatewayID"), c.GetUint("hmiID")).First(&node).Error; err != nil {
+		// Either it does not exist or it belongs to another display: a node is
+		// only ever reachable from the display it is assigned to.
 		c.JSON(http.StatusNotFound, gin.H{"error": "Node not found"})
 		return
 	}
 
-	state, hasState := NetworkRegistry[node.DeviceID]
+	state, hasState := registryGet(node.DeviceID)
 
 	resp := nodeDetailResponse(node)
 	if hasState {
@@ -751,7 +808,9 @@ func HMIControlNode(c *gin.Context) {
 	}
 
 	var node Node
-	if err := DB.Where("device_id = ?", uint32(deviceID)).First(&node).Error; err != nil {
+	if err := DB.Where("device_id = ? AND gateway_id = ? AND hmi_id = ?", uint32(deviceID), c.GetString("hmiGatewayID"), c.GetUint("hmiID")).First(&node).Error; err != nil {
+		// Either it does not exist or it belongs to another display: a node is
+		// only ever reachable from the display it is assigned to.
 		c.JSON(http.StatusNotFound, gin.H{"error": "Node not found"})
 		return
 	}
@@ -773,6 +832,9 @@ func HMIControlNode(c *gin.Context) {
 		if err := SendPinCommandToGateway(node.GatewayID, node.DeviceID, uint8(pin), req.Value); err != nil {
 			fmt.Printf("HMIControlNode: gateway %s offline, pin value stored locally\n", node.GatewayID)
 		}
+	} else if req.Value == ResetCommandValue {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "value 99 is reserved"})
+		return
 	} else if err := SendCommandToGateway(node.GatewayID, node.DeviceID, 2, req.Value); err != nil {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "Gateway is offline"})
 		return
@@ -812,6 +874,7 @@ func UpdateNodeCapabilities(c *gin.Context) {
 	}
 
 	DB.Model(&node).Update("capabilities_config", string(b))
+	invalidateTelemetryCache(node.DeviceID)
 
 	// Re-send provision to the gateway to apply new capabilities
 	if err := SendProvision(node.GatewayID, node.DeviceID, node.APIKey, node.DeviceType, node.Name, req.CapabilitiesConfig); err != nil {

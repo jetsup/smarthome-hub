@@ -6,7 +6,6 @@ import (
 	"strings"
 
 	"github.com/gin-gonic/gin"
-	"github.com/golang-jwt/jwt/v5"
 	"golang.org/x/crypto/bcrypt"
 )
 
@@ -21,6 +20,9 @@ type RegisterRequest struct {
 type LoginRequest struct {
 	Email    string `json:"email" binding:"required,email"`
 	Password string `json:"password" binding:"required"`
+	// Sent by the mobile app so this sign-in is listed under the right phone.
+	DeviceKey   string `json:"deviceKey"`
+	DeviceLabel string `json:"deviceLabel"`
 }
 
 func Register(c *gin.Context) {
@@ -59,14 +61,16 @@ func Register(c *gin.Context) {
 		return
 	}
 
-	token, err := GenerateToken(user.ID, user.Email)
+	sess := newSession(c, user.ID, "", "")
+	token, err := GenerateSessionToken(user.ID, user.Email, sess.ID)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to generate token"})
 		return
 	}
 
 	uid := fmt.Sprintf("%d", user.ID)
-	LogAudit(c, "user_registered", "user", &uid, "User registered: "+user.Email)
+	LogAuditAs(c, user.ID, user.Email, "user_registered", "Account created", "ok")
+	_ = uid
 
 	c.JSON(http.StatusCreated, gin.H{
 		"token": token,
@@ -90,25 +94,64 @@ func Login(c *gin.Context) {
 
 	var user User
 	if err := DB.Where("email = ?", req.Email).First(&user).Error; err != nil {
+		LogAuditAs(c, 0, req.Email, "login_failed", "Sign-in attempt for an unknown account", "failed")
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid email or password"})
 		return
 	}
 
 	if err := bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(req.Password)); err != nil {
+		LogAuditAs(c, user.ID, user.Email, "login_failed", "Wrong password", "failed")
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid email or password"})
 		return
 	}
 
-	token, err := GenerateToken(user.ID, user.Email)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to generate token"})
+	// Optional two-step verification: the password alone does not sign you in.
+	if user.MfaEnabled {
+		var phones int64
+		DB.Model(&MfaDevice{}).Where("user_id = ?", user.ID).Count(&phones)
+		mt, err := generateMFAToken(user, sanitizeDeviceKey(req.DeviceKey), req.DeviceLabel)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to start verification"})
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{
+			"mfaRequired": true,
+			"mfaToken":    mt,
+			"methods": gin.H{
+				"phone":    user.MfaPhone && phones > 0,
+				"totp":     user.MfaTotp,
+				"email":    user.MfaEmail && mailConfigured(),
+				"recovery": len(recoveryHashes(user)) > 0,
+			},
+			"emailTo": maskEmail(user.Email),
+		})
 		return
 	}
+	finishLogin(c, user, sanitizeDeviceKey(req.DeviceKey), req.DeviceLabel)
+}
 
+// finishLogin issues the real session token (after the password, and after MFA if enabled).
+func finishLogin(c *gin.Context, user User, deviceKey, deviceLabel string) {
+	payload, ok := loginPayload(c, user, deviceKey, deviceLabel)
+	if !ok {
+		return
+	}
+	c.JSON(http.StatusOK, payload)
+}
+
+// loginPayload creates the session and returns {token, user}. It writes the
+// error response itself and returns ok=false on failure.
+func loginPayload(c *gin.Context, user User, deviceKey, deviceLabel string) (gin.H, bool) {
+	sess := newSession(c, user.ID, deviceKey, deviceLabel)
+	token, err := GenerateSessionToken(user.ID, user.Email, sess.ID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to generate token"})
+		return nil, false
+	}
 	uid := fmt.Sprintf("%d", user.ID)
-	LogAudit(c, "user_login", "user", &uid, "User logged in: "+user.Email)
-
-	c.JSON(http.StatusOK, gin.H{
+	LogAuditAs(c, user.ID, user.Email, "user_login", "Signed in on "+sess.Label, "ok")
+	_ = uid
+	return gin.H{
 		"token": token,
 		"user": gin.H{
 			"id":        user.ID,
@@ -116,7 +159,7 @@ func Login(c *gin.Context) {
 			"lastName":  user.LastName,
 			"email":     user.Email,
 		},
-	})
+	}, true
 }
 
 func Me(c *gin.Context) {
@@ -131,25 +174,13 @@ func Me(c *gin.Context) {
 }
 
 func RefreshToken(c *gin.Context) {
-	auth := c.GetHeader("Authorization")
-	if auth == "" || !strings.HasPrefix(auth, "Bearer ") {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "Missing or invalid token"})
-		return
-	}
-
-	tokenStr := strings.TrimPrefix(auth, "Bearer ")
-	claims := &Claims{}
-
-	token, err := jwt.ParseWithClaims(tokenStr, claims, func(t *jwt.Token) (interface{}, error) {
-		return jwtSecret, nil
-	})
-
-	if err != nil || !token.Valid {
+	claims, ok := parseBearer(c)
+	if !ok || claims.Role != "" {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid or expired token"})
 		return
 	}
 
-	newToken, err := GenerateToken(claims.UserID, claims.Email)
+	newToken, err := GenerateSessionToken(claims.UserID, claims.Email, claims.SID)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to generate token"})
 		return

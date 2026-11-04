@@ -3,6 +3,7 @@ package hub
 import (
 	"bufio"
 	"encoding/binary"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log"
@@ -17,8 +18,8 @@ var (
 	tcpConnMap = make(map[string]net.Conn)
 	tcpConnMu  sync.Mutex
 
-	ackCh         = make(map[uint32]chan struct{})
-	ackChMu       sync.Mutex
+	ackCh   = make(map[uint32]chan struct{})
+	ackChMu sync.Mutex
 
 	announceIDMap = make(map[uint32]string)
 	announceIDMu  sync.RWMutex
@@ -185,16 +186,12 @@ func handleGatewayConnection(gatewayID string, conn net.Conn, reader *bufio.Read
 			deviceID := binary.LittleEndian.Uint32(buf[2:6])
 			value := binary.LittleEndian.Uint16(buf[6:8])
 
-			// Update gateway last_seen on any packet
-			DB.Model(&Gateway{}).Where("id = ?", gatewayID).Update("last_seen", time.Now())
+			// Update gateway last_seen (throttled: telemetry can arrive many times a second)
+			touchGateway(gatewayID)
 
 			switch buf[1] {
 			case 1: // Telemetry
-				log.Printf("Telemetry: device %d value %d via gateway %s", deviceID, value, gatewayID)
-				NetworkRegistry[deviceID] = DeviceState{
-					DeviceID: deviceID,
-					Value:    value,
-				}
+				registrySet(DeviceState{DeviceID: deviceID, Value: value})
 				ReportNode(gatewayID, deviceID, value)
 
 			case 3: // Discovery
@@ -222,67 +219,77 @@ func handleGatewayConnection(gatewayID string, conn net.Conn, reader *bufio.Read
 			DB.Model(&Gateway{}).Where("id = ?", gatewayID).Update("last_seen", time.Now())
 			log.Printf("TEXT from gateway %s: %s", gatewayID, line)
 
-		// Parse ACK messages and signal any waiting goroutines
-		if strings.HasPrefix(line, "ACK:") {
-			parts := strings.SplitN(line, ":", 3)
-			if len(parts) >= 3 {
-				ackType := parts[1]
-				ackDevice := parts[2]
-				log.Printf("ACK %s for device %s from gateway %s", ackType, ackDevice, gatewayID)
-				if ackType == "cmd" {
-					if devID, err := strconv.ParseUint(ackDevice, 10, 32); err == nil {
-						signalACK(uint32(devID))
+			// Parse ACK messages and signal any waiting goroutines
+			if strings.HasPrefix(line, "ACK:") {
+				parts := strings.SplitN(line, ":", 3)
+				if len(parts) >= 3 {
+					ackType := parts[1]
+					ackDevice := parts[2]
+					log.Printf("ACK %s for device %s from gateway %s", ackType, ackDevice, gatewayID)
+					if ackType == "cmd" {
+						if devID, err := strconv.ParseUint(ackDevice, 10, 32); err == nil {
+							signalACK(uint32(devID))
+						}
+					}
+				}
+			}
+
+			// Parse announce ID from gateway — GWID:<decimal_id>
+			if strings.HasPrefix(line, "GWID:") {
+				idStr := strings.TrimPrefix(line, "GWID:")
+				if id, err := strconv.ParseUint(idStr, 10, 32); err == nil {
+					setAnnounceIDMap(uint32(id), gatewayID)
+					log.Printf("Gateway %s announce ID: %d", gatewayID, id)
+
+					// Tell the gateway its real name so it announces itself
+					// correctly to HMIs (they match gateways by name).
+					var gwRow Gateway
+					if DB.Select("name").First(&gwRow, "id = ?", gatewayID).Error == nil && gwRow.Name != "" {
+						clean := strings.NewReplacer("\n", " ", "\r", " ").Replace(gwRow.Name)
+						if err := SendRawTextToGateway(gatewayID, "GWNAME:"+clean); err != nil {
+							log.Printf("GWNAME to gateway %s failed: %v", gatewayID, err)
+						}
 					}
 				}
 			}
-		}
 
-		// Parse announce ID from gateway — GWID:<decimal_id>
-		if strings.HasPrefix(line, "GWID:") {
-			idStr := strings.TrimPrefix(line, "GWID:")
-			if id, err := strconv.ParseUint(idStr, 10, 32); err == nil {
-				setAnnounceIDMap(uint32(id), gatewayID)
-				log.Printf("Gateway %s announce ID: %d", gatewayID, id)
-			}
-		}
-
-		// Parse credential sync from gateway — CREDS:<count>:<ssid1>:<pass1>:...
-		if strings.HasPrefix(line, "CREDS:") {
-			parts := strings.SplitN(line, ":", 4)
-			if len(parts) >= 2 {
-				countStr := parts[1]
-				rest := ""
-				if len(parts) >= 4 {
-					rest = parts[3]
-				} else if len(parts) >= 3 {
-					rest = parts[2]
+			// Credential sync from gateway. New firmware sends JSON (safe for any
+			// SSID characters): CREDSJ:{"nets":[{"s":"ssid","p":"pass"},...]} in
+			// priority order. Old firmware sends CREDS:<n>:<ssid>:<pass>:...
+			if strings.HasPrefix(line, "CREDSJ:") {
+				var payload struct {
+					Nets []wifiNet `json:"nets"`
 				}
-				count, err := strconv.Atoi(countStr)
-				if err == nil && count > 0 && rest != "" {
-					// Format after count: <ssid1>:<pass1>:<ssid2>:<pass2>:...
-					pairs := strings.Split(rest, ":")
-					saved := 0
-					// Clear old credentials for this gateway first
-					DB.Where("gateway_id = ?", gatewayID).Delete(&WifiCredential{})
-					for i := 0; i+1 < len(pairs) && i/2 < count; i += 2 {
-						ssid := pairs[i]
-						pass := ""
-						if i+1 < len(pairs) {
-							pass = pairs[i+1]
-						}
-						cred := WifiCredential{
-							GatewayID: gatewayID,
-							SSID:      ssid,
-							Password:  pass,
-						}
-						if err := DB.Create(&cred).Error; err == nil {
-							saved++
-						}
+				if err := json.Unmarshal([]byte(strings.TrimPrefix(line, "CREDSJ:")), &payload); err == nil {
+					applyGatewayCreds(gatewayID, payload.Nets)
+				} else {
+					log.Printf("Gateway %s sent bad CREDSJ: %v", gatewayID, err)
+				}
+			} else if strings.HasPrefix(line, "CREDS:") {
+				parts := strings.SplitN(line, ":", 4)
+				if len(parts) >= 2 {
+					rest := ""
+					if len(parts) >= 4 {
+						rest = parts[3]
+					} else if len(parts) >= 3 {
+						rest = parts[2]
 					}
-					log.Printf("Synced %d/%d Wi-Fi credentials from gateway %s", saved, count, gatewayID)
+					count, err := strconv.Atoi(parts[1])
+					if err == nil && count > 0 && rest != "" {
+						pairs := strings.Split(rest, ":")
+						var nets []wifiNet
+						for i := 0; i+1 < len(pairs) && i/2 < count; i += 2 {
+							nets = append(nets, wifiNet{S: pairs[i], P: pairs[i+1]})
+						}
+						applyGatewayCreds(gatewayID, nets)
+					}
 				}
 			}
-		}
+
+			// The gateway applied the list we pushed: the hub copy is now in sync.
+			if strings.HasPrefix(line, "ACK:wifiset") {
+				DB.Model(&Gateway{}).Where("id = ?", gatewayID).Update("wifi_dirty", false)
+			}
 		}
 	}
 }
@@ -323,8 +330,9 @@ func SendCommandToGateway(gatewayID string, deviceId uint32, msgType uint8, valu
 
 // SendPinCommandToGateway sends a per-pin command to a specific gateway.
 // Uses msgType=6 with pinIndex and value encoded in the 9-byte packet:
-//   byte 6 = (pinIndex << 4) | (value >> 8)
-//   byte 7 = value & 0xFF
+//
+//	byte 6 = (pinIndex << 4) | (value >> 8)
+//	byte 7 = value & 0xFF
 func SendPinCommandToGateway(gatewayID string, deviceId uint32, pinIndex uint8, value uint16) error {
 	conn := getTCPConn(gatewayID)
 	if conn == nil {
@@ -383,6 +391,10 @@ func packPinCommand(deviceId uint32, pin uint8, value uint16) []byte {
 	buf[1] = 6 // MSG_PIN_CMD
 	binary.LittleEndian.PutUint32(buf[2:6], deviceId)
 	buf[6] = pin
+	// Wire format carries one byte (matches the node's 8-bit PWM); clamp, don't wrap.
+	if value > 255 {
+		value = 255
+	}
 	buf[7] = uint8(value)
 	calcXor := uint8(0)
 	for i := 0; i < 8; i++ {
@@ -390,4 +402,23 @@ func packPinCommand(deviceId uint32, pin uint8, value uint16) []byte {
 	}
 	buf[8] = calcXor
 	return buf
+}
+
+var (
+	gwTouch   = map[string]time.Time{}
+	gwTouchMu sync.Mutex
+)
+
+// touchGateway records gateway liveness at most once every 2 seconds.
+func touchGateway(gatewayID string) {
+	gwTouchMu.Lock()
+	last := gwTouch[gatewayID]
+	due := time.Since(last) >= 2*time.Second
+	if due {
+		gwTouch[gatewayID] = time.Now()
+	}
+	gwTouchMu.Unlock()
+	if due {
+		DB.Model(&Gateway{}).Where("id = ?", gatewayID).Update("last_seen", time.Now())
+	}
 }

@@ -20,9 +20,9 @@ type pendingProvision struct {
 }
 
 var (
-	pendingProvisionMu    sync.RWMutex
-	pendingProvisions     = make(map[uint32]*pendingProvision)
-	pendingDeviceTypes    = make(map[uint32]uint8) // deviceID -> deviceType (from discovery)
+	pendingProvisionMu sync.RWMutex
+	pendingProvisions  = make(map[uint32]*pendingProvision)
+	pendingDeviceTypes = make(map[uint32]uint8) // deviceID -> deviceType (from discovery)
 )
 
 func addPendingProvision(deviceID uint32, gatewayID, apiKey string, deviceType uint8, name, caps string) {
@@ -36,6 +36,24 @@ func addPendingProvision(deviceID uint32, gatewayID, apiKey string, deviceType u
 		Name:               name,
 		CapabilitiesConfig: caps,
 	}
+	DB.Save(&PendingProvisionRow{DeviceID: deviceID, GatewayID: gatewayID, APIKey: apiKey, DeviceType: deviceType,
+		Name: name, CapabilitiesConfig: caps, CreatedAt: time.Now()})
+}
+
+// pendingProvisionTTL: a node that never reports within this long is forgotten.
+const pendingProvisionTTL = 30 * time.Minute
+
+// LoadPendingProvisions restores requests saved before a restart.
+func LoadPendingProvisions() {
+	DB.Where("created_at < ?", time.Now().Add(-pendingProvisionTTL)).Delete(&PendingProvisionRow{})
+	var rows []PendingProvisionRow
+	DB.Find(&rows)
+	pendingProvisionMu.Lock()
+	defer pendingProvisionMu.Unlock()
+	for _, r := range rows {
+		pendingProvisions[r.DeviceID] = &pendingProvision{DeviceID: r.DeviceID, GatewayID: r.GatewayID, APIKey: r.APIKey,
+			DeviceType: r.DeviceType, Name: r.Name, CapabilitiesConfig: r.CapabilitiesConfig}
+	}
 }
 
 func consumePendingProvision(deviceID uint32) *pendingProvision {
@@ -43,6 +61,7 @@ func consumePendingProvision(deviceID uint32) *pendingProvision {
 	defer pendingProvisionMu.Unlock()
 	p := pendingProvisions[deviceID]
 	if p != nil {
+		DB.Delete(&PendingProvisionRow{}, deviceID)
 		delete(pendingProvisions, deviceID)
 		delete(pendingDeviceTypes, deviceID)
 	}
@@ -122,13 +141,14 @@ func executePendingGatewayDeletion(action PendingAction) bool {
 		case <-ch:
 		case <-time.After(5 * time.Second):
 		}
-		delete(NetworkRegistry, n.DeviceID)
+		registryDelete(n.DeviceID)
 		clearPinValues(n.DeviceID)
 	}
 	removeTCPConn(action.TargetID)
 
 	DB.Where("gateway_id = ?", action.TargetID).Delete(&CapabilityBinding{})
 	DB.Where("gateway_id = ?", action.TargetID).Delete(&WifiCredential{})
+	deleteHmisOfGateway(action.TargetID)
 	DB.Where("gateway_id = ?", action.TargetID).Delete(&Node{})
 	DB.Where("id = ?", action.TargetID).Delete(&Gateway{})
 

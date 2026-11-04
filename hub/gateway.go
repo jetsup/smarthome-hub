@@ -233,13 +233,14 @@ func DeleteGateway(c *gin.Context) {
 		case <-time.After(5 * time.Second):
 			log.Printf("Timeout waiting for ACK from node %d on gateway %s", n.DeviceID, id)
 		}
-		delete(NetworkRegistry, n.DeviceID)
+		registryDelete(n.DeviceID)
 		clearPinValues(n.DeviceID)
 	}
 	removeTCPConn(id)
 
 	DB.Where("gateway_id = ?", id).Delete(&CapabilityBinding{})
 	DB.Where("gateway_id = ?", id).Delete(&WifiCredential{})
+	deleteHmisOfGateway(id)
 	DB.Where("gateway_id = ?", id).Delete(&Node{})
 	DB.Delete(&gw)
 

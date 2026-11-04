@@ -58,11 +58,10 @@ func updateNodeStatus() {
 			gwOnline = gw.IsOnline
 		}
 
-		state := NetworkRegistry[node.DeviceID]
+		state, _ := registryGet(node.DeviceID)
 		if node.LastSeen.Before(cutoff) || !gwOnline {
 			// Node is offline — remove from registry if present
-			if _, ok := NetworkRegistry[node.DeviceID]; ok {
-				delete(NetworkRegistry, node.DeviceID)
+			if registryDelete(node.DeviceID) {
 				if !gwOnline {
 					log.Printf("Node %d (%s) marked offline (gateway %s is offline)", node.DeviceID, node.NodeID, node.GatewayID)
 				} else {
@@ -71,13 +70,36 @@ func updateNodeStatus() {
 			}
 		} else {
 			// Node is online — update registry
-			NetworkRegistry[node.DeviceID] = DeviceState{
-				DeviceID: node.DeviceID,
-				Value:    state.Value,
-			}
+			registrySet(DeviceState{DeviceID: node.DeviceID, Value: state.Value})
 		}
 	}
 
 	// Purge stale discovered nodes
 	PurgeStaleDiscoveredNodes()
+}
+
+// UserRegistry returns the real-time device states for nodes owned by the user.
+func UserRegistry(userID uint) map[uint32]DeviceState {
+	var nodes []Node
+	DB.Joins("JOIN gateways ON gateways.id = nodes.gateway_id").
+		Where("gateways.user_id = ?", userID).Find(&nodes)
+	snap := RegistrySnapshot()
+	out := make(map[uint32]DeviceState)
+	for _, n := range nodes {
+		if s, ok := snap[n.DeviceID]; ok {
+			out[n.DeviceID] = s
+		}
+	}
+	return out
+}
+
+// UserOwnedDeviceGateway returns the gateway id of the user's node with the device id.
+func UserOwnedDeviceGateway(userID uint, deviceID uint32) (string, bool) {
+	var node Node
+	if err := DB.Joins("JOIN gateways ON gateways.id = nodes.gateway_id").
+		Where("nodes.device_id = ? AND gateways.user_id = ?", deviceID, userID).
+		First(&node).Error; err != nil {
+		return "", false
+	}
+	return node.GatewayID, true
 }
