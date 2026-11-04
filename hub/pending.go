@@ -109,7 +109,7 @@ func DeletePendingAction(c *gin.Context) {
 	actionID := c.Param("actionId")
 
 	var action PendingAction
-	if err := DB.First(&action, actionID).Error; err != nil {
+	if err := DB.Where("slug = ?", actionID).First(&action).Error; err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Pending action not found"})
 		return
 	}

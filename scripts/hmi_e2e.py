@@ -85,7 +85,8 @@ s, _ = call("POST", "/api/hmis/claim", {"code": reg1["code"], "gatewayId": gid})
 s, _ = call("POST", "/api/hmis/claim", {"code": reg1["code"], "gatewayId": ogw}, tok); check("cannot claim onto someone else's gateway", s == 404, s)
 s, d = call("POST", "/api/hmis/claim", {"code": reg1["code"], "gatewayId": gid}, tok)
 check("owner claims with the code", s == 200 and d["hmi"]["gatewayId"] == gid and d["hmi"]["name"] == "Kitchen", (s, d))
-hmi1 = d["hmi"]["id"]
+hmi1 = d["hmi"]["id"]; slug1 = d["hmi"]["slug"]
+check("display has a random slug", len(slug1) == 12 and slug1 != str(hmi1), slug1)
 s, d = status(dev_id(1), reg1["secret"]); check("display collects its token", d["status"] == "claimed" and d["token"], d)
 h1 = d["token"]
 s, d = status(dev_id(1), reg1["secret"]); check("token is delivered only once", d["status"] == "expired", d)
@@ -94,19 +95,20 @@ s, _ = call("POST", "/api/hmis/claim", {"code": reg1["code"], "gatewayId": gid},
 check("first display automatically gets existing nodes", hmi_nodes(h1) == [B1, B2], hmi_nodes(h1))
 s, d = call("GET", "/api/hmi/gateway", token=h1); check("display reads its gateway + name", s == 200 and d["hmiName"] == "Kitchen" and d["name"] == "GW-A", d)
 s, d = call("GET", "/api/hmi/gateway", token=h1); check("new display defaults to dark / #00A8E8 / 100%", d["appearance"] == {"theme": "dark", "accent": "00A8E8", "brightness": 100, "statusLed": True}, d.get("appearance"))
-s, d = call("PUT", f"/api/hmis/{hmi1}/appearance", {"theme": "light", "accent": "#f0a030", "brightness": 55, "statusLed": False}, tok); check("owner changes appearance", s == 200 and d["theme"] == "light", (s, d))
+s, d = call("PUT", f"/api/hmis/{slug1}/appearance", {"theme": "light", "accent": "#f0a030", "brightness": 55, "statusLed": False}, tok); check("owner changes appearance", s == 200 and d["theme"] == "light", (s, d))
 d = call("GET", "/api/hmi/gateway", token=h1)[1]; check("display receives the new appearance", d["appearance"] == {"theme": "light", "accent": "F0A030", "brightness": 55, "statusLed": False}, d.get("appearance"))
-check("bad theme rejected", call("PUT", f"/api/hmis/{hmi1}/appearance", {"theme": "neon"}, tok)[0] == 400)
-check("bad colour rejected", call("PUT", f"/api/hmis/{hmi1}/appearance", {"accent": "zzz"}, tok)[0] == 400)
-check("brightness out of range rejected", call("PUT", f"/api/hmis/{hmi1}/appearance", {"brightness": 3}, tok)[0] == 400)
-check("another account cannot change it", call("PUT", f"/api/hmis/{hmi1}/appearance", {"theme": "dark"}, otok)[0] == 404)
+check("bad theme rejected", call("PUT", f"/api/hmis/{slug1}/appearance", {"theme": "neon"}, tok)[0] == 400)
+check("bad colour rejected", call("PUT", f"/api/hmis/{slug1}/appearance", {"accent": "zzz"}, tok)[0] == 400)
+check("brightness out of range rejected", call("PUT", f"/api/hmis/{slug1}/appearance", {"brightness": 3}, tok)[0] == 400)
+check("another account cannot change it", call("PUT", f"/api/hmis/{slug1}/appearance", {"theme": "dark"}, otok)[0] == 404)
 
 # ── listing ──────────────────────────────────────────────────────────────────
 s, d = call("GET", "/api/hmis", token=tok)
 row = next((x for x in d if x["id"] == hmi1), None)
 check("owner sees the display in the list", s == 200 and row and row["gatewayName"] == "GW-A" and row["online"] and row["nodeCount"] == 2, d)
 s, d = call("GET", "/api/hmis", token=otok); check("other user sees none of them", s == 200 and d == [], d)
-s, _ = call("GET", f"/api/hmis/{hmi1}", token=otok); check("other user cannot open the display", s == 404, s)
+s, _ = call("GET", f"/api/hmis/{slug1}", token=otok); check("a database id in the link finds nothing", call("GET", f"/api/hmis/{hmi1}", token=tok)[0] == 404)
+s, _ = call("GET", f"/api/hmis/{slug1}", token=otok); check("other user cannot open the display", s == 404, s)
 
 # ── brute force on the claim code ────────────────────────────────────────────
 codes = [call("POST", "/api/hmis/claim", {"code": f"99999{i}", "gatewayId": gid}, otok)[0] for i in range(7)]
@@ -114,7 +116,7 @@ check("wrong codes are rate-limited (429)", 429 in codes and codes[0] == 404, co
 
 # ── second display on the same gateway ───────────────────────────────────────
 reg2 = call("POST", "/api/hmi/register", {"deviceId": dev_id(2), "name": "Hallway"})[1]
-d = call("POST", "/api/hmis/claim", {"code": reg2["code"], "gatewayId": gid}, tok)[1]; hmi2 = d["hmi"]["id"]
+d = call("POST", "/api/hmis/claim", {"code": reg2["code"], "gatewayId": gid}, tok)[1]; hmi2 = d["hmi"]["id"]; slug2 = d["hmi"]["slug"]
 h2 = status(dev_id(2), reg2["secret"])[1]["token"]
 check("second display starts with no nodes", hmi_nodes(h2) == [], hmi_nodes(h2))
 check("first display keeps its nodes", hmi_nodes(h1) == [B1, B2], hmi_nodes(h1))
@@ -126,16 +128,16 @@ check("node 2 is now on display 2 only", hmi_nodes(h2) == [B2], hmi_nodes(h2))
 s, _ = call("POST", f"/api/hmi/nodes/{B2}/command", {"pin": 26, "value": 1}, h1); check("display 1 cannot control node 2", s == 404, s)
 s, _ = call("GET", f"/api/hmi/nodes/{B2}", token=h1); check("display 1 cannot read node 2", s == 404, s)
 s, _ = call("POST", f"/api/hmi/nodes/{B2}/command", {"pin": 26, "value": 1}, h2); check("display 2 can control node 2", s == 200, s)
-s, d = call("PUT", f"/api/hmis/{hmi2}/nodes", {"deviceIds": [B1, B2]}, tok)
+s, d = call("PUT", f"/api/hmis/{slug2}/nodes", {"deviceIds": [B1, B2]}, tok)
 check("bulk assign moves nodes (never shares)", s == 200, (s, d))
 check("display 1 lost node 1 (moved to display 2)", hmi_nodes(h1) == [], hmi_nodes(h1))
 check("display 2 now has both", hmi_nodes(h2) == [B1, B2], hmi_nodes(h2))
 both = set(hmi_nodes(h1) or []) & set(hmi_nodes(h2) or []); check("INVARIANT: no node on two displays", not both, both)
-s, _ = call("PUT", f"/api/hmis/{hmi1}/nodes", {"deviceIds": [999999]}, tok); check("unknown node id rejected", s == 400, s)
-s, _ = call("PUT", f"/api/hmis/{hmi1}/nodes", {"deviceIds": [B1]}, otok); check("other user cannot assign", s == 404, s)
+s, _ = call("PUT", f"/api/hmis/{slug1}/nodes", {"deviceIds": [999999]}, tok); check("unknown node id rejected", s == 400, s)
+s, _ = call("PUT", f"/api/hmis/{slug1}/nodes", {"deviceIds": [B1]}, otok); check("other user cannot assign", s == 404, s)
 s, _ = call("PUT", f"/api/nodes/{nid(B1)}/hmi", {"hmiId": hmi1}, otok); check("other user cannot assign (node route)", s == 404, s)
 s, d = call("PUT", f"/api/nodes/{nid(B1)}/hmi", {"hmiId": None}, tok); check("unassign a node", s == 200 and hmi_nodes(h2) == [B2], hmi_nodes(h2))
-s, d = call("GET", f"/api/hmis/{hmi1}", token=tok)
+s, d = call("GET", f"/api/hmis/{slug1}", token=tok)
 nv = {n["deviceId"]: n for n in d["nodes"]}
 check("detail shows who has each node", nv[B1]["hmiId"] is None and nv[B2]["hmiName"] == "Hallway" and d["siblings"] == 1, d)
 
@@ -150,11 +152,11 @@ h3 = status(dev_id(3), reg3["secret"])[1]["token"]
 check("display on another gateway sees none of these nodes", hmi_nodes(h3) == [], hmi_nodes(h3))
 
 # ── rename / unpair ──────────────────────────────────────────────────────────
-s, d = call("PUT", f"/api/hmis/{hmi1}", {"name": "  Living   Room "}, tok); check("rename tidies the name", s == 200 and d["name"] == "Living Room", (s, d))
-s, _ = call("PUT", f"/api/hmis/{hmi1}", {"name": "  "}, tok); check("blank name rejected", s == 400, s)
-call("PUT", f"/api/hmis/{hmi2}/nodes", {"deviceIds": [B2, B3]}, tok)
-s, _ = call("DELETE", f"/api/hmis/{hmi2}", token=otok); check("other user cannot unpair", s == 404, s)
-s, _ = call("DELETE", f"/api/hmis/{hmi2}", token=tok); check("owner unpairs a display", s == 200, s)
+s, d = call("PUT", f"/api/hmis/{slug1}", {"name": "  Living   Room "}, tok); check("rename tidies the name", s == 200 and d["name"] == "Living Room", (s, d))
+s, _ = call("PUT", f"/api/hmis/{slug1}", {"name": "  "}, tok); check("blank name rejected", s == 400, s)
+call("PUT", f"/api/hmis/{slug2}/nodes", {"deviceIds": [B2, B3]}, tok)
+s, _ = call("DELETE", f"/api/hmis/{slug2}", token=otok); check("other user cannot unpair", s == 404, s)
+s, _ = call("DELETE", f"/api/hmis/{slug2}", token=tok); check("owner unpairs a display", s == 200, s)
 s, _ = call("GET", "/api/hmi/gateway", token=h2); check("unpaired display's token stops working at once", s == 401, s)
 d = call("GET", f"/api/gateways/{gid}/nodes", token=tok)[1]
 check("its nodes are released, not left on a dead display", all(n.get("hmiId") is None for n in d if n["deviceId"] in (B2, B3)), d)

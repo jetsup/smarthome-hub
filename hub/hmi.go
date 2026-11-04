@@ -394,7 +394,7 @@ func firstNonEmpty(a, b string) string {
 
 func ownedHmi(c *gin.Context) (Hmi, bool) {
 	var h Hmi
-	if err := DB.Where("id = ? AND user_id = ?", c.Param("id"), c.GetUint("userID")).First(&h).Error; err != nil {
+	if err := DB.Where("slug = ? AND user_id = ?", c.Param("id"), c.GetUint("userID")).First(&h).Error; err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Display not found"})
 		return h, false
 	}

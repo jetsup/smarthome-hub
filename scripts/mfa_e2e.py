@@ -101,7 +101,9 @@ app_key = "app-device-key-" + stamp.ljust(16, "0")
 s, d = call("POST", "/api/auth/login", {"email": email, "password": pw, "deviceKey": app_key, "deviceLabel": "INFINIX X6855 · SmartHomes app"}); app_tok = d["token"]
 s, ss = call("GET", "/api/sessions", token=tok)
 check("an app sign-in is listed with the phone's real model", any(x["label"] == "INFINIX X6855 · SmartHomes app" and x["kind"] == "app" and not x["current"] for x in ss), ss)
-app_sess = next(x["id"] for x in ss if x["kind"] == "app")
+app_sess = next(x["slug"] for x in ss if x["kind"] == "app")
+check("sessions are addressed by slug, not database id", len(app_sess) == 12 and not app_sess.isdigit(), app_sess)
+s, _ = call("DELETE", "/api/sessions/1", token=tok); check("a numeric id in the link finds nothing", s == 404, s)
 s, _ = call("DELETE", f"/api/sessions/{app_sess}", token=tok); check("revoking a device works", s == 200, s)
 s, _ = call("GET", "/api/profile", token=app_tok); check("the revoked device is signed out immediately", s == 401, s)
 s, _ = call("DELETE", f"/api/sessions/{app_sess}", token=tok); check("revoking twice is a 404", s == 404, s)
@@ -231,11 +233,11 @@ phone_tok = None
 mt3 = call("POST", "/api/auth/login", {"email": email, "password": pw, "deviceKey": ph3, "deviceLabel": "Google Pixel 8 · SmartHomes app"})[1]["mfaToken"]
 phone_tok = call("POST", "/api/auth/mfa/verify", {"mfaToken": mt3, "recoveryCode": call("POST", "/api/mfa/recovery", {"password": pw}, tok)[1]["recoveryCodes"][0]})[1]["token"]
 s, _ = call("GET", "/api/profile", token=phone_tok); check("an app session on the second phone works", s == 200, s)
-pid = next(x["id"] for x in call("GET", "/api/mfa/devices", token=tok)[1] if x["model"] == "Pixel 8")
+pid = next(x["slug"] for x in call("GET", "/api/mfa/devices", token=tok)[1] if x["model"] == "Pixel 8")
 s, d = call("DELETE", f"/api/mfa/devices/{pid}", token=tok); check("removing a phone reports what it signed out", s == 200 and d["signedOut"] >= 1, (s, d))
 s, _ = call("GET", "/api/profile", token=phone_tok); check("that phone's session is dead at once", s == 401, s)
 s, _ = call("POST", "/api/auth/mfa/challenge", {"mfaToken": mt3, "method": "phone"}); check("(the removed phone no longer counts)", s in (200, 409), s)
-pid1 = call("GET", "/api/mfa/devices", token=tok)[1][0]["id"]
+pid1 = call("GET", "/api/mfa/devices", token=tok)[1][0]["slug"]
 s, d = call("DELETE", f"/api/mfa/devices/{pid1}", token=tok); check("cannot remove the only phone while app approval is on", s == 409, (s, d))
 
 # ── brute force limits (last: they lock this account for a while) ────────────

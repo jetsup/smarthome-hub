@@ -486,7 +486,7 @@ func MfaDeleteDevice(c *gin.Context) {
 		return
 	}
 	var d MfaDevice
-	if DB.Where("id = ? AND user_id = ?", c.Param("id"), u.ID).First(&d).Error != nil {
+	if DB.Where("slug = ? AND user_id = ?", c.Param("id"), u.ID).First(&d).Error != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Phone not found"})
 		return
 	}

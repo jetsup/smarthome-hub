@@ -152,3 +152,7 @@ Note: command value `99` is reserved (node factory reset) and rejected on user c
 ### Activity log (audit)
 
 `GET /api/audit?category=&outcome=ok|failed&q=&before=<id>&limit=` returns who did what, from which device and IP (sign-ins and failures, security and device changes, gateway/node/display/Wi-Fi changes); `&format=csv` exports. Shown in the web UI under **Activity log**. Covered by `scripts/mfa_e2e.py`.
+
+### Links use slugs, not database ids
+
+Tables addressed by URL (displays, phones, signed-in devices, pending actions, bindings, saved Wi-Fi networks) carry a random 12-character `slug`; routes such as `/api/hmis/:id` take that slug and a numeric database id finds nothing. Gateways and nodes already use random hex ids. Existing rows get slugs automatically at startup.

@@ -140,7 +140,7 @@ func ListSessions(c *gin.Context) {
 
 func RevokeSession(c *gin.Context) {
 	var s UserSession
-	if DB.Where("id = ? AND user_id = ?", c.Param("id"), c.GetUint("userID")).First(&s).Error != nil {
+	if DB.Where("slug = ? AND user_id = ?", c.Param("id"), c.GetUint("userID")).First(&s).Error != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Device not found"})
 		return
 	}

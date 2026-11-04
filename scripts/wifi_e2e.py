@@ -78,6 +78,8 @@ check("re-saving an SSID updates it (no duplicate)", names.count("HomeWiFi") == 
 
 # ── reorder
 ids = {r["ssid"]: r["id"] for r in rows}
+slugs = {r["ssid"]: r["slug"] for r in rows}
+check("saved networks carry a slug", all(len(v) == 12 for v in slugs.values()), slugs)
 s, _ = call("PUT", f"/api/gateways/{gid}/wifi/order", {"ids": [ids["Phone Hotspot"], ids["HomeWiFi"], ids["Office:5G"]]}, tok)
 ls = lines(gw)
 check("reorder accepted", s == 200, s)
@@ -87,7 +89,8 @@ s, _ = call("PUT", f"/api/gateways/{gid}/wifi/order", {"ids": [ids["HomeWiFi"], 
 check("unknown ids are ignored, unmentioned keep order", order(ls) == ["HomeWiFi", "Phone Hotspot", "Office:5G"], order(ls))
 
 # ── delete re-packs priorities and tells the gateway
-s, _ = call("DELETE", f"/api/gateways/{gid}/wifi/{ids['Phone Hotspot']}", token=tok); ls = lines(gw)
+s, _ = call("DELETE", f"/api/gateways/{gid}/wifi/{ids['Phone Hotspot']}", token=tok); check("a database id is not accepted in the link", s == 404, s)
+s, _ = call("DELETE", f"/api/gateways/{gid}/wifi/{slugs['Phone Hotspot']}", token=tok); ls = lines(gw)
 check("delete ok", s == 200, s)
 check("gateway told the network was removed", order(ls) == ["HomeWiFi", "Office:5G"], order(ls))
 names, rows = listed(tok, gid); check("priorities re-packed 0,1", [r["priority"] for r in rows] == [0, 1], rows)
@@ -97,7 +100,7 @@ other = f"x{stamp}@example.com"
 call("POST", "/api/auth/register", {"firstName": "O", "lastName": "U", "email": other, "password": "secret1", "confirmPassword": "secret1"})
 otok = call("POST", "/api/auth/login", {"email": other, "password": "secret1"})[1]["token"]
 s, _ = call("PUT", f"/api/gateways/{gid}/wifi/order", {"ids": [1]}, otok); check("other user cannot reorder", s == 404, s)
-s, _ = call("DELETE", f"/api/gateways/{gid}/wifi/{ids['HomeWiFi']}", token=otok); check("other user cannot delete", s == 404, s)
+s, _ = call("DELETE", f"/api/gateways/{gid}/wifi/{slugs['HomeWiFi']}", token=otok); check("other user cannot delete", s == 404, s)
 s, _ = call("PUT", f"/api/gateways/{gid}", {"name": "pwned"}, otok); check("other user cannot rename", s == 404, s)
 
 # ── offline edit: hub copy wins over the gateway's stale list on reconnect

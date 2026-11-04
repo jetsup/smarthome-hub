@@ -32,6 +32,7 @@ type User struct {
 
 // MfaDevice is a phone (the mobile app) that can approve sign-ins.
 type MfaDevice struct {
+	Slugged
 	ID           uint      `gorm:"primaryKey" json:"id"`
 	UserID       uint      `gorm:"index;not null" json:"-"`
 	DeviceKey    string    `gorm:"uniqueIndex;size:64;not null" json:"-"`
@@ -47,6 +48,7 @@ type MfaDevice struct {
 // UserSession is one signed-in browser or app. Tokens carry its id, so revoking
 // it signs that device out immediately.
 type UserSession struct {
+	Slugged
 	ID        uint      `gorm:"primaryKey" json:"id"`
 	UserID    uint      `gorm:"index;not null" json:"-"`
 	DeviceKey string    `gorm:"index;size:64" json:"-"` // links an app session to its MfaDevice
@@ -104,6 +106,7 @@ type Node struct {
 // Hmi is a paired touch display. It is bound to one gateway and shows only the
 // nodes assigned to it.
 type Hmi struct {
+	Slugged
 	ID        uint      `gorm:"primaryKey" json:"id"`
 	DeviceID  string    `gorm:"uniqueIndex;size:40;not null" json:"deviceId"` // hardware id (MAC) or legacy-*
 	GatewayID string    `gorm:"index;size:16;not null" json:"gatewayId"`
@@ -134,6 +137,9 @@ type PendingProvisionRow struct {
 // BeforeCreate gives every new display the default look (GORM would insert the
 // zero values, e.g. status light off).
 func (h *Hmi) BeforeCreate(tx *gorm.DB) error {
+	if h.Slug == "" {
+		h.Slug = newSlug()
+	}
 	if h.Theme == "" {
 		h.Theme = "dark"
 	}
@@ -149,6 +155,7 @@ func (h *Hmi) BeforeCreate(tx *gorm.DB) error {
 
 // WifiCredential stores SSID/password pairs for a gateway.
 type WifiCredential struct {
+	Slugged
 	ID        uint      `gorm:"primaryKey" json:"id"`
 	GatewayID string    `gorm:"index;not null;size:16" json:"gatewayId"`
 	SSID      string    `gorm:"size:255;not null" json:"ssid"`
@@ -176,6 +183,7 @@ type AuditLog struct {
 
 // PendingAction queues gateway/node deletion jobs for execution when the target comes online.
 type PendingAction struct {
+	Slugged
 	ID        uint      `gorm:"primaryKey" json:"id"`
 	GatewayID string    `gorm:"index;not null;size:16" json:"gatewayId"`
 	Action    string    `gorm:"size:50;not null" json:"action"`          // "delete_gateway"
@@ -187,6 +195,7 @@ type PendingAction struct {
 }
 
 type CapabilityBinding struct {
+	Slugged
 	ID             uint      `gorm:"primaryKey" json:"id"`
 	GatewayID      string    `gorm:"index:idx_binding_source;uniqueIndex:idx_unique_binding;not null;size:16" json:"gatewayId"`
 	SourceDeviceID uint32    `gorm:"index:idx_binding_source;uniqueIndex:idx_unique_binding;not null" json:"sourceDeviceId"`
@@ -372,6 +381,7 @@ func AutoMigrate(db *gorm.DB) error {
 	if err := db.AutoMigrate(&User{}, &Gateway{}, &Node{}, &AuditLog{}, &WifiCredential{}, &CapabilityBinding{}, &PendingAction{}, &Hmi{}, &MfaDevice{}, &UserSession{}, &PendingProvisionRow{}); err != nil {
 		return err
 	}
+	backfillSlugs(db)
 	// Create unique composite index for bindings (no-op if already exists)
 	if !db.Migrator().HasIndex(&CapabilityBinding{}, "idx_unique_binding") {
 		db.Migrator().CreateIndex(&CapabilityBinding{}, "idx_unique_binding")

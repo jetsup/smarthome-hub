@@ -201,7 +201,7 @@ func DeleteWifiCredential(c *gin.Context) {
 		return
 	}
 	var cred WifiCredential
-	if err := DB.Where("id = ? AND gateway_id = ?", c.Param("credId"), gw.ID).First(&cred).Error; err != nil {
+	if err := DB.Where("slug = ? AND gateway_id = ?", c.Param("credId"), gw.ID).First(&cred).Error; err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Credential not found"})
 		return
 	}

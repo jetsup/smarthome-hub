@@ -17,6 +17,7 @@ type BindingRequest struct {
 type BindingResponse struct {
 	ID             uint      `json:"id"`
 	GatewayID      string    `json:"gatewayId"`
+	Slug           string    `json:"slug"`
 	SourceDeviceID uint32    `json:"sourceDeviceId"`
 	SourcePin      uint8     `json:"sourcePin"`
 	TargetDeviceID uint32    `json:"targetDeviceId"`
@@ -41,6 +42,7 @@ func ListBindings(c *gin.Context) {
 	for i, b := range bindings {
 		resp[i] = BindingResponse{
 			ID:             b.ID,
+			Slug:           b.Slug,
 			GatewayID:      b.GatewayID,
 			SourceDeviceID: b.SourceDeviceID,
 			SourcePin:      b.SourcePin,
@@ -104,6 +106,7 @@ func CreateBinding(c *gin.Context) {
 
 	c.JSON(http.StatusCreated, BindingResponse{
 		ID:             binding.ID,
+		Slug:           binding.Slug,
 		GatewayID:      binding.GatewayID,
 		SourceDeviceID: binding.SourceDeviceID,
 		SourcePin:      binding.SourcePin,
@@ -118,7 +121,7 @@ func DeleteBinding(c *gin.Context) {
 	userID := c.GetUint("userID")
 
 	var binding CapabilityBinding
-	if err := DB.First(&binding, bindingID).Error; err != nil {
+	if err := DB.Where("slug = ?", bindingID).First(&binding).Error; err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Binding not found"})
 		return
 	}
