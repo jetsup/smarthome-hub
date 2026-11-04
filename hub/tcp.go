@@ -135,6 +135,7 @@ func StartTCPWorker(addr string) {
 
 		// Execute any pending actions for this gateway (e.g. queued deletions)
 		executePendingActions(gw.ID)
+		go resendPendingCaps(gw.ID)
 
 		go handleGatewayConnection(gw.ID, conn, reader)
 	}

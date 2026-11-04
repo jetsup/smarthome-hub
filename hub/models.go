@@ -97,6 +97,7 @@ type Node struct {
 	LastValue          uint16     `gorm:"default:0" json:"value"`
 	LastSeen           time.Time  `json:"lastSeen"`
 	ConnectedAt        *time.Time `json:"connectedAt"`
+	CapsPending        bool       `gorm:"default:false" json:"capsPending"` // new pins saved but not yet delivered to the node
 	// HmiID: the one display this node is shown on / controlled from. A node is
 	// never shared between displays; nil = not assigned to any display.
 	HmiID     *uint     `gorm:"index" json:"hmiId"`

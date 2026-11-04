@@ -152,6 +152,14 @@ h3 = status(dev_id(3), reg3["secret"])[1]["token"]
 check("display on another gateway sees none of these nodes", hmi_nodes(h3) == [], hmi_nodes(h3))
 
 # ── rename / unpair ──────────────────────────────────────────────────────────
+caps_ok = [{"type": "analogInput", "pin": 34, "label": "Pot"}, {"type": "digitalOutput", "pin": 25, "label": "Green"}]
+s, d = call("PUT", f"/api/nodes/{nid(B1)}/capabilities", {"capabilitiesConfig": caps_ok}, tok); check("owner changes a node's pins", s == 200, (s, d))
+check("duplicate pin rejected", call("PUT", f"/api/nodes/{nid(B1)}/capabilities", {"capabilitiesConfig": [{"type": "digitalOutput", "pin": 25}, {"type": "analogInput", "pin": 25}]}, tok)[0] == 400)
+check("output on an input-only pin rejected", call("PUT", f"/api/nodes/{nid(B1)}/capabilities", {"capabilitiesConfig": [{"type": "digitalOutput", "pin": 34}]}, tok)[0] == 400)
+check("flash pins rejected", call("PUT", f"/api/nodes/{nid(B1)}/capabilities", {"capabilitiesConfig": [{"type": "digitalOutput", "pin": 9}]}, tok)[0] == 400)
+check("empty pin list rejected", call("PUT", f"/api/nodes/{nid(B1)}/capabilities", {"capabilitiesConfig": []}, tok)[0] == 400)
+check("another account cannot change pins", call("PUT", f"/api/nodes/{nid(B1)}/capabilities", {"capabilitiesConfig": caps_ok}, otok)[0] == 404)
+s, d = call("GET", f"/api/nodes/{nid(B1)}", token=tok); check("new pins are stored", s == 200 and "Green" in json.dumps(d), d)
 s, d = call("PUT", f"/api/hmis/{slug1}", {"name": "  Living   Room "}, tok); check("rename tidies the name", s == 200 and d["name"] == "Living Room", (s, d))
 s, _ = call("PUT", f"/api/hmis/{slug1}", {"name": "  "}, tok); check("blank name rejected", s == 400, s)
 call("PUT", f"/api/hmis/{slug2}/nodes", {"deviceIds": [B2, B3]}, tok)

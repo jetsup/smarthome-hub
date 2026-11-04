@@ -356,6 +356,13 @@ func ProvisionNode(c *gin.Context) {
 		return
 	}
 
+	if len(req.CapabilitiesConfig) > 0 {
+		if err := validateCapabilities(req.CapabilitiesConfig); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+	}
+
 	// Marshal capabilities to JSON for DB storage
 	capsDB := ""
 	if len(req.CapabilitiesConfig) > 0 {
@@ -456,6 +463,13 @@ func ProvisionNodeToGateway(c *gin.Context) {
 	if err := DB.Where("id = ? AND user_id = ?", req.GatewayID, userID).First(&gw).Error; err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Gateway not found"})
 		return
+	}
+
+	if len(req.CapabilitiesConfig) > 0 {
+		if err := validateCapabilities(req.CapabilitiesConfig); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
 	}
 
 	// Marshal capabilities to JSON for DB storage
@@ -867,24 +881,31 @@ func UpdateNodeCapabilities(c *gin.Context) {
 		return
 	}
 
+	if err := validateCapabilities(req.CapabilitiesConfig); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
 	b, err := json.Marshal(req.CapabilitiesConfig)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to marshal capabilities"})
 		return
 	}
 
-	DB.Model(&node).Update("capabilities_config", string(b))
+	DB.Model(&node).Updates(map[string]interface{}{"capabilities_config": string(b), "caps_pending": true})
 	invalidateTelemetryCache(node.DeviceID)
+	dropStaleBindings(node.GatewayID, node.DeviceID, req.CapabilitiesConfig)
 
 	// Re-send provision to the gateway to apply new capabilities
 	if err := SendProvision(node.GatewayID, node.DeviceID, node.APIKey, node.DeviceType, node.Name, req.CapabilitiesConfig); err != nil {
 		c.JSON(http.StatusOK, gin.H{
 			"status":  "updated_but_offline",
-			"message": "Gateway is offline; will be sent when gateway reconnects",
+			"message": "Saved. The gateway is offline, so the node gets the new pins as soon as it reconnects.",
 		})
 		return
 	}
 
+	DB.Model(&node).Update("caps_pending", false)
 	LogAudit(c, "node_capabilities_updated", "node", &node.NodeID,
 		fmt.Sprintf("Capabilities updated for node %s (%d)", node.NodeID, node.DeviceID))
 
@@ -912,4 +933,19 @@ func PingDevice(c *gin.Context) {
 	DB.Model(&node).Update("last_seen", time.Now())
 
 	c.JSON(http.StatusOK, gin.H{"status": "ok"})
+}
+
+// dropStaleBindings removes bindings that point at pins the node no longer has.
+func dropStaleBindings(gatewayID string, deviceID uint32, caps []CapabilityConfig) {
+	has := map[int]bool{}
+	for _, c := range caps {
+		has[c.Pin] = true
+	}
+	var bs []CapabilityBinding
+	DB.Where("gateway_id = ? AND (source_device_id = ? OR target_device_id = ?)", gatewayID, deviceID, deviceID).Find(&bs)
+	for _, b := range bs {
+		if (b.SourceDeviceID == deviceID && !has[int(b.SourcePin)]) || (b.TargetDeviceID == deviceID && !has[int(b.TargetPin)]) {
+			DB.Delete(&b)
+		}
+	}
 }
