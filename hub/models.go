@@ -82,6 +82,12 @@ type CapabilityConfig struct {
 	Extra int     `json:"extra,omitempty"`
 	Label string  `json:"label,omitempty"`
 	Value *uint16 `json:"value,omitempty"`
+	// Module options (see catalog.go): LED count / ring layout, second pin, etc.
+	Count int  `json:"count,omitempty"`
+	Ring  bool `json:"ring,omitempty"`
+	Pin2  int  `json:"pin2,omitempty"`
+	// Short human text of the module's current state (sensors, patterns); filled by the hub.
+	Display string `json:"display,omitempty"`
 }
 
 type Node struct {
@@ -97,6 +103,9 @@ type Node struct {
 	LastValue          uint16     `gorm:"default:0" json:"value"`
 	LastSeen           time.Time  `json:"lastSeen"`
 	ConnectedAt        *time.Time `json:"connectedAt"`
+	Readings           string     `gorm:"type:text" json:"-"`               // latest sensor readings (JSON)
+	Effects            string     `gorm:"type:text" json:"-"`               // last actuator settings per capability (JSON)
+	Outputs            string     `gorm:"type:text" json:"-"`               // last commanded output pin values (JSON pin->value)
 	CapsPending        bool       `gorm:"default:false" json:"capsPending"` // new pins saved but not yet delivered to the node
 	// HmiID: the one display this node is shown on / controlled from. A node is
 	// never shared between displays; nil = not assigned to any display.
@@ -120,7 +129,34 @@ type Hmi struct {
 	Theme      string `gorm:"size:8;default:dark" json:"theme"`    // dark | light
 	Accent     string `gorm:"size:6;default:00A8E8" json:"accent"` // RRGGBB
 	Brightness int    `gorm:"default:100" json:"brightness"`       // 10-100 (%)
-	StatusLed  bool   `gorm:"default:true" json:"statusLed"`       // rainbow status LED
+	StatusLed  bool   `gorm:"default:true" json:"statusLed"`       // onboard RGB LED on/off
+
+	Background    string `gorm:"size:6" json:"background"`             // RRGGBB page colour, "" = theme default
+	LedMode       string `gorm:"size:12;default:solid" json:"ledMode"` // pattern of the onboard RGB LED
+	LedColor      string `gorm:"size:6" json:"ledColor"`               // RRGGBB, "" = follow the accent colour
+	LedBrightness int    `gorm:"default:40" json:"ledBrightness"`      // 1-100 (%)
+	LedSpeed      int    `gorm:"default:50" json:"ledSpeed"`           // 1-100
+}
+
+// Rule connects modules to each other: "when <sensor channel> <op> <threshold>, do <action>".
+// Evaluated by the hub whenever a reading arrives; fires on the edge (false -> true).
+type Rule struct {
+	ID uint `gorm:"primaryKey" json:"-"`
+	Slugged
+	GatewayID      string    `gorm:"index;size:16;not null" json:"gatewayId"`
+	Name           string    `gorm:"size:80" json:"name"`
+	Enabled        bool      `gorm:"default:true" json:"enabled"`
+	SourceDeviceID uint32    `json:"sourceDeviceId"`
+	SourceCap      int       `json:"sourceCap"`
+	Channel        int       `json:"channel"`
+	Op             string    `gorm:"size:4" json:"op"` // > < >= <= == !=
+	Threshold      float64   `json:"threshold"`
+	TargetDeviceID uint32    `json:"targetDeviceId"`
+	TargetCap      int       `json:"targetCap"`
+	OnTrue         string    `gorm:"type:text" json:"onTrue"`  // action JSON {action, params}
+	OnFalse        string    `gorm:"type:text" json:"onFalse"` // optional
+	LastState      bool      `json:"-"`
+	CreatedAt      time.Time `json:"createdAt"`
 }
 
 // PendingProvisionRow keeps a provisioning request until the node's first report,
@@ -151,6 +187,15 @@ func (h *Hmi) BeforeCreate(tx *gorm.DB) error {
 		h.Brightness = 100
 	}
 	h.StatusLed = true
+	if h.LedMode == "" {
+		h.LedMode = "solid"
+	}
+	if h.LedBrightness == 0 {
+		h.LedBrightness = 40
+	}
+	if h.LedSpeed == 0 {
+		h.LedSpeed = 50
+	}
 	return nil
 }
 
@@ -379,7 +424,7 @@ func GetAllDiscoveredNodes() []DiscoveredNodeInfo {
 // ── Auto-migrate all models ──────────────────────────────────────────────────
 
 func AutoMigrate(db *gorm.DB) error {
-	if err := db.AutoMigrate(&User{}, &Gateway{}, &Node{}, &AuditLog{}, &WifiCredential{}, &CapabilityBinding{}, &PendingAction{}, &Hmi{}, &MfaDevice{}, &UserSession{}, &PendingProvisionRow{}); err != nil {
+	if err := db.AutoMigrate(&User{}, &Gateway{}, &Node{}, &AuditLog{}, &WifiCredential{}, &CapabilityBinding{}, &PendingAction{}, &Hmi{}, &MfaDevice{}, &UserSession{}, &PendingProvisionRow{}, &Rule{}); err != nil {
 		return err
 	}
 	backfillSlugs(db)

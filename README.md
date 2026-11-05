@@ -2,32 +2,94 @@
 
 Go backend — REST API + TCP gateway bridge for the SmartHome ecosystem. Built with **Gin**, **GORM**, and **MariaDB**.
 
-## Prerequisites
+## The whole system at a glance
+
+```
+ Vue web UI ─┐                                     ┌─ ESP32 node (sensors, LEDs, relays…)
+ Flutter app ┼─ HTTP :9000 ─► HUB (this project) ◄─ TCP :9010 ─ ESP32 gateway ─ ESP-NOW ─┤
+ ESP32-S3 HMI┘            (Go + MariaDB)                                                  └─ ESP32 node
+```
+
+| Project | What it is | Setup guide |
+|---|---|---|
+| `smarthome-hub` | Go server: REST API, gateway TCP bridge, web UI host, database | this file |
+| `smarthome-ui` | Vue 3 web dashboard (built files are served by the hub) | `../smarthome-ui/README.md` |
+| `smarthome-app` | Flutter Android app | `../smarthome-app/README.md` |
+| `smarthome-gateway` | ESP32 firmware bridging ESP-NOW ⇄ hub | `../smarthome-gateway/README.md` |
+| `smarthome-node` | ESP32 firmware for sensor/actuator nodes | `../smarthome-node/README.md` |
+| `smarthome-hmi` | ESP32-S3 touch display firmware (Viewe 2.8") | `../smarthome-hmi/README.md` |
+
+### Set up in this order
+
+1. **Hub** (this file) – database, `.env`, run it. Note the hub computer's **LAN IP address** (`ip -4 addr` / `ipconfig`) and give it a fixed address (DHCP reservation on your router).
+2. **Web UI** – build once; the hub serves it. Open `http://<HUB_IP>:9000`, register your account.
+3. **Gateway firmware** – put the hub IP in, flash, then link it to a gateway you create in the UI.
+4. **Node firmware** – put your home Wi-Fi name/password in, flash, then discover and activate it from the UI/app.
+5. **HMI display** – put the hub IP in, flash, join Wi-Fi, pair with the code it shows.
+6. **Android app** – build with the hub URL, install on the phone.
+
+### ⚠️ Values you MUST change for your own installation
+
+Everything below ships with the author's bench values. Change them or nothing will connect.
+
+| Where | Setting | Shipped value | Change it to |
+|---|---|---|---|
+| `smarthome-hub/.env` | `DB_PASS` | `smarthome` | a strong database password (same one you give MariaDB below) |
+| `smarthome-hub/.env` | `JWT_SECRET` | (placeholder) | a long random string: `openssl rand -hex 32` |
+| `smarthome-hub/.env` | `SMTP_*`, `PUBLIC_URL` | unset | only if you want email codes (see table below) |
+| `smarthome-gateway/include/Config.hpp` | `HUB_ADDR` | `192.168.100.100` | **your hub's IP** (or pass `-DHUB_ADDR=\"x.x.x.x\"` in `platformio.ini`) |
+| `smarthome-hmi/include/config.hpp` | `HMI_HUB_HOST` | `192.168.100.100` | **your hub's IP** (or `-DHMI_HUB_HOST=\"x.x.x.x\"`) |
+| `smarthome-hmi/include/network_manager.hpp` | `m_hubHost` | `192.168.100.100` | same IP (fallback value) |
+| `smarthome-node/include/Config.hpp` | `WIFI_SSID`, `WIFI_PASS` | the author's Wi-Fi | **your 2.4 GHz home Wi-Fi** (the node joins it only to learn the radio channel so ESP-NOW matches the gateway) |
+| `smarthome-app/lib/config.dart` | `HUB_URL` | `http://192.168.100.100:9000` | **your hub URL**, best via `--dart-define=HUB_URL=http://<HUB_IP>:9000` |
+
+Ports (`9000` HTTP, `9010` TCP) only need changing if they clash; if you change them, change them in the gateway (`HUB_WEB_PORT`, `HUB_TCP_PORT`), HMI (`HMI_HUB_PORT`) and app URL too.
+Everything must be on the **same LAN**; gateway, HMI and nodes need **2.4 GHz** Wi-Fi.
+
+## Installation (hub)
+
+### Prerequisites
 
 - **Go** 1.21+
 - **MariaDB** 10.6+ (or MySQL-compatible)
-- **Node.js** 18+ (only needed to rebuild the Vue frontend)
+- **Node.js** 18+ (to build the web UI)
+- Python 3 (only for the test scripts)
 
-## Quick Start
+### 1. Create the database
 
 ```bash
-# 1. Copy and edit environment config
-cp .env.example .env
-#   At minimum, set DB_HOST, DB_USER, DB_PASS, DB_NAME, and JWT_SECRET
-
-# 2. Build the Vue frontend (if not already built)
-cd ../smarthome-ui && npm install && npm run build && cd ../smarthome-hub
-
-# 3. Install Go dependencies
-go mod tidy
-
-# 4. Run
-go run .
+sudo mariadb <<'SQL'
+CREATE DATABASE smarthome CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+CREATE USER 'smarthome'@'localhost' IDENTIFIED BY 'CHANGE_ME';   -- same value as DB_PASS
+GRANT ALL PRIVILEGES ON smarthome.* TO 'smarthome'@'localhost';
+FLUSH PRIVILEGES;
+SQL
 ```
 
-The server starts on `:9000` (HTTP) and `:9010` (TCP gateway).
+Tables are created and migrated automatically on start-up.
 
-## Environment Variables
+### 2. Configure `.env`
+
+```bash
+cp .env.example .env
+#   Edit: DB_HOST / DB_USER / DB_PASS / DB_NAME must match step 1, and set JWT_SECRET
+```
+
+### 3. Build the web UI, then run
+
+```bash
+cd ../smarthome-ui && npm install && npm run build && cd ../smarthome-hub
+go mod tidy
+go run .                 # development
+# or a binary:  make local   ->  build/smarthome-hub   (make pi-arm64 for a Raspberry Pi)
+```
+
+The hub listens on `:9000` (HTTP + web UI) and `:9010` (TCP, gateways). Open `http://<HUB_IP>:9000` and register the first user.
+Allow both ports through the hub computer's firewall (`sudo ufw allow 9000/tcp && sudo ufw allow 9010/tcp`).
+
+Run it as a service on a Pi/server (optional): create `/etc/systemd/system/smarthome-hub.service` with `WorkingDirectory=` the hub folder, `ExecStart=` the built binary, `Restart=always`, then `systemctl enable --now smarthome-hub`.
+
+## Environment Variables (`.env`)
 
 |       Variable        |       Default     |              Description                          |
 |-----------------------|-------------------|---------------------------------------------------|
@@ -36,9 +98,9 @@ The server starts on `:9000` (HTTP) and `:9010` (TCP gateway).
 | `DB_HOST`             | `127.0.0.1`       | MariaDB host                                      |
 | `DB_PORT`             | `3306`            | MariaDB port                                      |
 | `DB_USER`             | `smarthome`       | Database user                                     |
-| `DB_PASS`             | `smarthome`       | Database password                                 |
+| `DB_PASS`             | `smarthome` **change** | Database password                            |
 | `DB_NAME`             | `smarthome`       | Database name                                     |
-| `JWT_SECRET`          | (required)        | Secret for JWT token signing                      |
+| `JWT_SECRET`          | (required) **change** | Secret for JWT token signing (`openssl rand -hex 32`) |
 | `NODE_OFFLINE_TIMEOUT`| `300`             | Seconds without ping before node marked offline   |
 | `UI_DIR`              | auto-detected     | Directory of the built Vue SPA                    |
 | `CORS_ORIGINS`        | Vite dev server   | Comma-separated allowed cross-origin origins      |
@@ -156,3 +218,21 @@ Note: command value `99` is reserved (node factory reset) and rejected on user c
 ### Links use slugs, not database ids
 
 Tables addressed by URL (displays, phones, signed-in devices, pending actions, bindings, saved Wi-Fi networks) carry a random 12-character `slug`; routes such as `/api/hmis/:id` take that slug and a numeric database id finds nothing. Gateways and nodes already use random hex ids. Existing rows get slugs automatically at startup.
+
+### Modules: NeoPixel, sensors, buzzer, RTC (extensible)
+
+Every kind of hardware a node can carry is one entry in `hub/catalog.go` (`GET /api/capabilities/catalog`): its form fields, the readings it reports, and the actions it accepts. The web UI and the app build their forms and controls from that catalog, so a new module needs only a catalog entry plus its driver in the node firmware (`smarthome-node/src/modules.cpp`).
+
+| Module | Fields | Readings | Actions |
+|---|---|---|---|
+| NeoPixel strip/ring | data GPIO, LED count, ring | – | `setEffect` (22 patterns incl. ring animations, colour, speed, brightness, reverse) |
+| Buzzer | GPIO | – | `play` (beep, double/triple, alarm, siren, chime, doorbell) |
+| DHT11/22 | GPIO, model | temperature, humidity | – |
+| LD2410 radar | RX/TX GPIO | presence, moving/still distance & energy | – |
+| DS3231 RTC | SDA/SCL | time, chip temperature, valid | `syncTime` |
+| Analog / digital input | GPIO | value (per pin) | – |
+
+* `POST /api/nodes/:nodeId/action {cap, action, params}` runs an action; readings and last settings are in `GET /api/nodes/:nodeId` (`readings`, `effects`).
+* **Rules** connect modules to each other: `POST /api/gateways/:id/rules` (“when DHT humidity > 65 → buzzer alarm; otherwise stop”). They fire on the edge and are listed/enabled/deleted under `/api/rules/:slug`.
+* **Shared clock**: a DS3231 becomes the system clock (`GET /api/system/time`); the hub pushes `TIME:` to every gateway, which broadcasts it to the nodes — the base for scheduled tasks.
+* Wire protocol: classic 9-byte frames, plus length-prefixed frames (type ≥ 8) for readings (8), actions (9) and time (11). Gateway→node commands are sent several times because ESP-NOW broadcasts are unacknowledged. Tested by `scripts/modules_e2e.py`.

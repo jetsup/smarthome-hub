@@ -562,7 +562,7 @@ func HMIGetGateway(c *gin.Context) {
 		return
 	}
 	var h Hmi
-	DB.Select("id", "name", "theme", "accent", "brightness", "status_led").First(&h, c.GetUint("hmiID"))
+	DB.Select("id", "name", "theme", "accent", "brightness", "status_led", "background", "led_mode", "led_color", "led_brightness", "led_speed").First(&h, c.GetUint("hmiID"))
 	c.JSON(http.StatusOK, gin.H{"id": gw.ID, "name": gw.Name, "isOnline": gw.IsOnline, "hmiId": h.ID, "hmiName": h.Name,
 		"appearance": appearanceOf(h)})
 }
@@ -578,8 +578,31 @@ func appearanceOf(h Hmi) gin.H {
 	if br < 10 || br > 100 {
 		br = 100
 	}
-	return gin.H{"theme": theme, "accent": accent, "brightness": br, "statusLed": h.StatusLed}
+	bg, ledColor := strings.ToUpper(h.Background), strings.ToUpper(h.LedColor)
+	if !hexColor.MatchString(bg) {
+		bg = ""
+	}
+	if !hexColor.MatchString(ledColor) {
+		ledColor = ""
+	}
+	mode := h.LedMode
+	if !ledModes[mode] {
+		mode = "solid"
+	}
+	lb, ls := h.LedBrightness, h.LedSpeed
+	if lb < 1 || lb > 100 {
+		lb = 40
+	}
+	if ls < 1 || ls > 100 {
+		ls = 50
+	}
+	return gin.H{"theme": theme, "accent": accent, "brightness": br, "statusLed": h.StatusLed,
+		"background": bg, "ledMode": mode, "ledColor": ledColor, "ledBrightness": lb, "ledSpeed": ls}
 }
+
+// Patterns the onboard RGB LED can play (the display firmware maps these to effects).
+var ledModes = map[string]bool{"solid": true, "blink": true, "breathe": true, "fade": true, "rainbow": true,
+	"random": true, "strobe": true, "twinkle": true, "flicker": true, "sparkle": true}
 
 var hexColor = regexp.MustCompile(`^[0-9A-F]{6}$`)
 
@@ -595,6 +618,12 @@ func SetHmiAppearance(c *gin.Context) {
 		Accent     *string `json:"accent"`
 		Brightness *int    `json:"brightness"`
 		StatusLed  *bool   `json:"statusLed"`
+
+		Background    *string `json:"background"`
+		LedMode       *string `json:"ledMode"`
+		LedColor      *string `json:"ledColor"`
+		LedBrightness *int    `json:"ledBrightness"`
+		LedSpeed      *int    `json:"ledSpeed"`
 	}
 	if c.ShouldBindJSON(&req) != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request"})
@@ -625,6 +654,42 @@ func SetHmiAppearance(c *gin.Context) {
 	}
 	if req.StatusLed != nil {
 		up["status_led"] = *req.StatusLed
+	}
+	for field, col := range map[string]*string{"background": req.Background, "ledColor": req.LedColor} {
+		if col == nil {
+			continue
+		}
+		v := strings.ToUpper(strings.TrimPrefix(*col, "#"))
+		if v != "" && !hexColor.MatchString(v) {
+			c.JSON(http.StatusBadRequest, gin.H{"error": field + " must be a colour like 00A8E8 (or empty for the default)"})
+			return
+		}
+		if field == "background" {
+			up["background"] = v
+		} else {
+			up["led_color"] = v
+		}
+	}
+	if req.LedMode != nil {
+		if !ledModes[*req.LedMode] {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Unknown LED pattern"})
+			return
+		}
+		up["led_mode"] = *req.LedMode
+	}
+	if req.LedBrightness != nil {
+		if *req.LedBrightness < 1 || *req.LedBrightness > 100 {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "LED brightness must be 1-100"})
+			return
+		}
+		up["led_brightness"] = *req.LedBrightness
+	}
+	if req.LedSpeed != nil {
+		if *req.LedSpeed < 1 || *req.LedSpeed > 100 {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "LED speed must be 1-100"})
+			return
+		}
+		up["led_speed"] = *req.LedSpeed
 	}
 	if len(up) > 0 {
 		DB.Model(&h).Updates(up)

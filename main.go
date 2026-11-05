@@ -60,6 +60,8 @@ func main() {
 	// Initialize MariaDB
 	hub.InitDatabase()
 	hub.LoadPendingProvisions()
+	hub.StartTimeSync()
+	hub.StartOutputFlusher()
 
 	// Fire up the TCP listener for the WiFi gateway as a background Goroutine
 	go hub.StartTCPWorker(":" + env("TCP_PORT", "9010"))
@@ -192,6 +194,13 @@ func main() {
 		api.POST("/nodes/scan", hub.ScanAllGateways)
 		api.GET("/nodes/discovered", hub.GetAllDiscoveredNodesHandler)
 		api.POST("/nodes/provision", hub.ProvisionNodeToGateway)
+		api.GET("/capabilities/catalog", hub.GetCapabilityCatalog)
+		api.GET("/system/time", hub.GetSystemTime)
+		api.POST("/nodes/:nodeId/action", hub.NodeAction)
+		api.GET("/gateways/:id/rules", hub.ListRules)
+		api.POST("/gateways/:id/rules", hub.CreateRule)
+		api.PUT("/rules/:ruleId/enabled", hub.SetRuleEnabled)
+		api.DELETE("/rules/:ruleId", hub.DeleteRule)
 
 		// Node detail (by hex nodeId)
 		api.GET("/nodes/:nodeId", hub.GetNode)

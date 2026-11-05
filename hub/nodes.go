@@ -62,19 +62,21 @@ type NodeResponse struct {
 // NodeDetailResponse is returned by GetNode / GetNodeByDeviceID.
 // It parses CapabilitiesConfig from its JSON string into a proper array.
 type NodeDetailResponse struct {
-	NodeID             string             `json:"nodeId"`
-	GatewayID          string             `json:"gatewayId"`
-	DeviceID           uint32             `json:"deviceId"`
-	APIKey             string             `json:"apiKey,omitempty"`
-	DeviceType         uint8              `json:"deviceType"`
-	Name               string             `json:"name"`
-	CapabilitiesConfig []CapabilityConfig `json:"capabilitiesConfig"`
-	LastValue          uint16             `json:"value"`
-	LastSeen           time.Time          `json:"lastSeen"`
-	ConnectedAt        *time.Time         `json:"connectedAt"`
-	CreatedAt          time.Time          `json:"createdAt"`
-	IsOnline           bool               `json:"isOnline"`
-	HmiID              *uint              `json:"hmiId"` // the one display this node is shown on
+	NodeID             string                            `json:"nodeId"`
+	GatewayID          string                            `json:"gatewayId"`
+	DeviceID           uint32                            `json:"deviceId"`
+	APIKey             string                            `json:"apiKey,omitempty"`
+	DeviceType         uint8                             `json:"deviceType"`
+	Name               string                            `json:"name"`
+	CapabilitiesConfig []CapabilityConfig                `json:"capabilitiesConfig"`
+	LastValue          uint16                            `json:"value"`
+	LastSeen           time.Time                         `json:"lastSeen"`
+	ConnectedAt        *time.Time                        `json:"connectedAt"`
+	CreatedAt          time.Time                         `json:"createdAt"`
+	IsOnline           bool                              `json:"isOnline"`
+	HmiID              *uint                             `json:"hmiId"` // the one display this node is shown on
+	Readings           []ReadingValue                    `json:"readings"`
+	Effects            map[string]map[string]interface{} `json:"effects"`
 }
 
 type ProvisionRequest struct {
@@ -204,7 +206,7 @@ func ReportNode(gatewayID string, deviceID uint32, value uint16) {
 
 	// Store telemetry value as pin value for input capabilities
 	// and forward each input pin's value to any bound output target.
-	if caps := parseCapabilitiesConfig(node.CapabilitiesConfig); caps != nil {
+	if caps := parseCapabilitiesConfig(node.CapabilitiesConfig); caps != nil && !readingsFresh(deviceID) {
 		for _, c := range caps {
 			if c.Type == "analogInput" || c.Type == "digitalInput" {
 				pin := uint8(c.Pin)
@@ -241,16 +243,7 @@ func nodeDetailResponse(node Node) NodeDetailResponse {
 	}
 	online := isNodeOnline(node.LastSeen) && gwOnline
 
-	caps := parseCapabilitiesConfig(node.CapabilitiesConfig)
-	pv := getPinValues(node.DeviceID)
-	if pv != nil && caps != nil {
-		for i, c := range caps {
-			if v, ok := pv[uint8(c.Pin)]; ok {
-				v := v
-				caps[i].Value = &v
-			}
-		}
-	}
+	caps := decorateCaps(node)
 
 	return NodeDetailResponse{
 		NodeID:             node.NodeID,
@@ -266,6 +259,8 @@ func nodeDetailResponse(node Node) NodeDetailResponse {
 		CreatedAt:          node.CreatedAt,
 		IsOnline:           online,
 		HmiID:              node.HmiID,
+		Readings:           readingsFor(node),
+		Effects:            effectsFor(node),
 	}
 }
 
@@ -298,28 +293,10 @@ func ListNodes(c *gin.Context) {
 }
 
 func capTypeToInt(typeStr string) int {
-	switch typeStr {
-	case "analogInput":
-		return 0
-	case "analogOutput":
-		return 1
-	case "digitalInput":
-		return 2
-	case "digitalOutput":
-		return 3
-	case "relay":
-		return 4
-	case "irTx":
-		return 5
-	case "irRx":
-		return 6
-	case "i2c":
-		return 7
-	case "uart":
-		return 8
-	default:
-		return 0
+	if ct := capTypeByKey(typeStr); ct != nil {
+		return ct.Code
 	}
+	return 0
 }
 
 func compactCapabilities(caps []CapabilityConfig) string {
@@ -329,7 +306,12 @@ func compactCapabilities(caps []CapabilityConfig) string {
 	var parts []string
 	for _, c := range caps {
 		label := strings.ReplaceAll(c.Label, ":", "_")
-		parts = append(parts, fmt.Sprintf("%d:%d:%d:%s", capTypeToInt(c.Type), c.Pin, c.Extra, label))
+		flags := 0
+		if c.Ring {
+			flags |= 1
+		}
+		// type:pin:extra:count:flags:pin2:label
+		parts = append(parts, fmt.Sprintf("%d:%d:%d:%d:%d:%d:%s", capTypeToInt(c.Type), c.Pin, c.Extra, c.Count, flags, c.Pin2, label))
 	}
 	return fmt.Sprintf("%d:%s", len(caps), strings.Join(parts, ":"))
 }
@@ -705,16 +687,7 @@ func HMIListAllNodes(c *gin.Context) {
 	resp := make([]HMIDeviceInfo, 0, len(nodes)+10)
 
 	for _, n := range nodes {
-		caps := parseCapabilitiesConfig(n.CapabilitiesConfig)
-		pv := getPinValues(n.DeviceID)
-		if pv != nil && caps != nil {
-			for i, c := range caps {
-				if v, ok := pv[uint8(c.Pin)]; ok {
-					v := v
-					caps[i].Value = &v
-				}
-			}
-		}
+		caps := decorateCaps(n)
 		resp = append(resp, HMIDeviceInfo{
 			DeviceID:      n.DeviceID,
 			Name:          n.Name,

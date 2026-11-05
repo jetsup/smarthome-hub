@@ -36,7 +36,7 @@ func (s *Slugged) BeforeCreate(tx *gorm.DB) error {
 
 // backfillSlugs adds slugs to rows created before slugs existed.
 func backfillSlugs(db *gorm.DB) {
-	for _, table := range []string{"hmis", "mfa_devices", "user_sessions", "pending_actions", "capability_bindings", "wifi_credentials"} {
+	for _, table := range []string{"hmis", "mfa_devices", "user_sessions", "pending_actions", "capability_bindings", "wifi_credentials", "rules"} {
 		var ids []uint
 		db.Table(table).Where("slug = '' OR slug IS NULL").Pluck("id", &ids)
 		for _, id := range ids {

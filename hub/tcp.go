@@ -136,6 +136,7 @@ func StartTCPWorker(addr string) {
 		// Execute any pending actions for this gateway (e.g. queued deletions)
 		executePendingActions(gw.ID)
 		go resendPendingCaps(gw.ID)
+		go pushTimeToGateway(gw.ID)
 
 		go handleGatewayConnection(gw.ID, conn, reader)
 	}
@@ -163,9 +164,35 @@ func handleGatewayConnection(gatewayID string, conn net.Conn, reader *bufio.Read
 		}
 
 		if peek[0] == 0xAA {
-			// Standard 9-byte ESP-NOW packet
+			// ESP-NOW packet: 9 bytes for the classic types, or a length-prefixed frame for type >= 8.
+			head := make([]byte, 2)
+			if _, err := io.ReadFull(reader, head); err != nil {
+				log.Printf("Gateway %s read error: %v", gatewayID, err)
+				return
+			}
+			if head[1] >= 8 {
+				rest := make([]byte, 5) // devId[4] + len
+				if _, err := io.ReadFull(reader, rest); err != nil {
+					return
+				}
+				plen := int(rest[4])
+				payload := make([]byte, plen+1) // + xor
+				if _, err := io.ReadFull(reader, payload); err != nil {
+					return
+				}
+				frame := append(append(append([]byte{}, head...), rest...), payload[:plen]...)
+				if xorOf(frame) != payload[plen] {
+					log.Printf("Checksum mismatch (type %d) from gateway %s", head[1], gatewayID)
+					continue
+				}
+				touchGateway(gatewayID)
+				deviceID := binary.LittleEndian.Uint32(rest[0:4])
+				handleVariableFrame(gatewayID, head[1], deviceID, payload[:plen])
+				continue
+			}
 			buf := make([]byte, 9)
-			if _, err := io.ReadFull(reader, buf); err != nil {
+			copy(buf, head)
+			if _, err := io.ReadFull(reader, buf[2:]); err != nil {
 				log.Printf("Gateway %s read error: %v", gatewayID, err)
 				return
 			}
@@ -335,6 +362,7 @@ func SendCommandToGateway(gatewayID string, deviceId uint32, msgType uint8, valu
 //	byte 6 = (pinIndex << 4) | (value >> 8)
 //	byte 7 = value & 0xFF
 func SendPinCommandToGateway(gatewayID string, deviceId uint32, pinIndex uint8, value uint16) error {
+	rememberOutput(gatewayID, deviceId, pinIndex, value) // so a restarted node can be put back as it was
 	conn := getTCPConn(gatewayID)
 	if conn == nil {
 		return fmt.Errorf("gateway %s is not connected", gatewayID)
