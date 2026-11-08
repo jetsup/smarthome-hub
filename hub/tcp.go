@@ -231,8 +231,9 @@ func handleGatewayConnection(gatewayID string, conn net.Conn, reader *bufio.Read
 				if len(buf) >= 8 {
 					deviceType = uint8(buf[6]) // value low byte → device type
 				}
-				log.Printf("Discovery: device %d type %d via gateway %s", deviceID, deviceType, gatewayID)
-				AddDiscoveredNode(gatewayID, deviceID)
+				paired := value&0x100 != 0 // bit 8: the node already belongs to a gateway
+				log.Printf("Discovery: device %d type %d paired=%v via gateway %s", deviceID, deviceType, paired, gatewayID)
+				AddDiscoveredNode(gatewayID, deviceID, paired)
 				// If we already have a pending provision for this device, update its type
 				addPendingDeviceType(deviceID, deviceType)
 
@@ -264,6 +265,11 @@ func handleGatewayConnection(gatewayID string, conn net.Conn, reader *bufio.Read
 						}
 					}
 				}
+			}
+
+			// GWMAC:AA:BB:CC:DD:EE:FF — the gateway's hardware address
+			if strings.HasPrefix(line, "GWMAC:") {
+				recordGatewayMac(gatewayID, strings.TrimPrefix(line, "GWMAC:"))
 			}
 
 			// Parse announce ID from gateway — GWID:<decimal_id>
@@ -380,9 +386,26 @@ func SendPinCommandToGateway(gatewayID string, deviceId uint32, pinIndex uint8, 
 // SendProvision sends a BB: provisioning command to a specific gateway.
 // Format: BB:deviceId:apiKey:gatewayId:deviceType:nodeName:capCount:type1:pin1:extra1:label1:...\n
 func SendProvision(gatewayID string, deviceId uint32, apiKey string, deviceType uint8, nodeName string, caps []CapabilityConfig) error {
+	code := ""
+	var n Node
+	if DB.Where("gateway_id = ? AND device_id = ?", gatewayID, deviceId).First(&n).Error == nil {
+		code = ensureNodeCode(&n)
+	}
+	return SendProvisionCode(gatewayID, deviceId, apiKey, deviceType, nodeName, caps, code)
+}
+
+// SendProvisionCode is SendProvision with the node's pairing code. The gateway
+// puts the code into the provision frame; the node refuses the frame when it is
+// already paired and the code is not the one it holds.
+func SendProvisionCode(gatewayID string, deviceId uint32, apiKey string, deviceType uint8, nodeName string, caps []CapabilityConfig, code string) error {
 	conn := getTCPConn(gatewayID)
 	if conn == nil {
 		return fmt.Errorf("gateway %s is not connected", gatewayID)
+	}
+	if code != "" {
+		if _, err := conn.Write([]byte(fmt.Sprintf("PCODE:%d:%s\n", deviceId, code))); err != nil {
+			return err
+		}
 	}
 	capsStr := compactCapabilities(caps)
 	msg := fmt.Sprintf("BB:%d:%s:%s:%d:%s:%s\n", deviceId, apiKey, gatewayID, deviceType, nodeName, capsStr)

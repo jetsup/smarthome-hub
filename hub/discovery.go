@@ -56,11 +56,24 @@ func GetDiscoveredNodes(c *gin.Context) {
 		return
 	}
 
+	// Paired nodes answer scans too; the ones already on this gateway are not "new".
+	mine := ownNodeNames(gwID)
 	result := make([]DiscoveredNodeInfo, 0, len(nodes))
 	for devID := range nodes {
+		_, paired := discoveryState(devID)
+		name, isMine := mine[devID]
+		if isMine && paired {
+			continue // alive and working: not new
+		}
+		// A node this gateway has a record of, heard saying "I am not paired",
+		// was reset (or re-flashed): offer it again, with its saved setup.
 		result = append(result, DiscoveredNodeInfo{
 			DeviceID:  devID,
 			GatewayID: gwID,
+			Paired:    paired,
+			Known:     isMine,
+			KnownName: name,
+			Mac:       macOf(devID),
 		})
 	}
 	c.JSON(http.StatusOK, result)
@@ -102,11 +115,31 @@ func GetAllDiscoveredNodesHandler(c *gin.Context) {
 
 	allDiscovered := GetAllDiscoveredNodes()
 	filtered := make([]DiscoveredNodeInfo, 0, len(allDiscovered))
+	own := map[string]map[uint32]string{}
+	for id := range userGatewayIDs {
+		own[id] = ownNodeNames(id)
+	}
 	for _, d := range allDiscovered {
+		name, isMine := own[d.GatewayID][d.DeviceID]
+		if isMine && d.Paired {
+			continue
+		}
+		d.Known, d.KnownName, d.Mac = isMine, name, macOf(d.DeviceID)
 		if userGatewayIDs[d.GatewayID] {
 			filtered = append(filtered, d)
 		}
 	}
 
 	c.JSON(http.StatusOK, filtered)
+}
+
+// ownNodeNames: the nodes already paired to a gateway (device id -> saved name).
+func ownNodeNames(gwID string) map[uint32]string {
+	var rows []Node
+	DB.Select("device_id", "name").Where("gateway_id = ?", gwID).Find(&rows)
+	m := make(map[uint32]string, len(rows))
+	for _, n := range rows {
+		m[n.DeviceID] = n.Name
+	}
+	return m
 }

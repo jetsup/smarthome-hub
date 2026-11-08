@@ -75,13 +75,17 @@ type NodeDetailResponse struct {
 	CreatedAt          time.Time                         `json:"createdAt"`
 	IsOnline           bool                              `json:"isOnline"`
 	HmiID              *uint                             `json:"hmiId"` // the one display this node is shown on
+	PairCode           string                            `json:"pairCode"`
+	Mac                string                            `json:"mac"`
 	Readings           []ReadingValue                    `json:"readings"`
 	Effects            map[string]map[string]interface{} `json:"effects"`
 }
 
 type ProvisionRequest struct {
 	DeviceID           uint32             `json:"deviceId" binding:"required"`
-	Force              bool               `json:"force"`
+	Force              bool               `json:"force"` // ignored: moving a paired node needs its code
+	Code               string             `json:"code,omitempty"`
+	AdoptCode          string             `json:"adoptCode,omitempty"` // pairing code of a node whose settings this one takes over
 	Name               string             `json:"name,omitempty"`
 	CapabilitiesConfig []CapabilityConfig `json:"capabilitiesConfig,omitempty"`
 }
@@ -89,7 +93,9 @@ type ProvisionRequest struct {
 type CrossProvisionRequest struct {
 	DeviceID           uint32             `json:"deviceId" binding:"required"`
 	GatewayID          string             `json:"gatewayId" binding:"required"`
-	Force              bool               `json:"force"`
+	Force              bool               `json:"force"` // ignored: moving a paired node needs its code
+	Code               string             `json:"code,omitempty"`
+	AdoptCode          string             `json:"adoptCode,omitempty"` // pairing code of a node whose settings this one takes over
 	Name               string             `json:"name,omitempty"`
 	CapabilitiesConfig []CapabilityConfig `json:"capabilitiesConfig,omitempty"`
 }
@@ -176,6 +182,12 @@ func ReportNode(gatewayID string, deviceID uint32, value uint16) {
 			ConnectedAt:        &now,
 			HmiID:              defaultHmiFor(gatewayID),
 		}
+		if p.PairCode != "" {
+			pc := p.PairCode
+			node.PairCode = &pc
+		}
+		node.Mac = macOf(deviceID)
+		adoptSettings(&node, p.AdoptFrom)
 		DB.Create(&node)
 		registrySet(DeviceState{DeviceID: deviceID, Value: value})
 		RemoveDiscoveredNode(gatewayID, deviceID)
@@ -262,6 +274,8 @@ func nodeDetailResponse(node Node) NodeDetailResponse {
 		CreatedAt:          node.CreatedAt,
 		IsOnline:           online,
 		HmiID:              node.HmiID,
+		PairCode:           ensureNodeCode(&node),
+		Mac:                node.Mac,
 		Readings:           readingsFor(node),
 		Effects:            effectsFor(node),
 	}
@@ -341,6 +355,12 @@ func ProvisionNode(c *gin.Context) {
 		return
 	}
 
+	adopt, st, body := resolveAdopt(userID, req.AdoptCode, req.DeviceID, &req.Name, &req.CapabilitiesConfig)
+	if st != 0 {
+		c.JSON(st, body)
+		return
+	}
+
 	if len(req.CapabilitiesConfig) > 0 {
 		if err := validateCapabilities(req.CapabilitiesConfig); err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
@@ -357,25 +377,12 @@ func ProvisionNode(c *gin.Context) {
 		}
 	}
 
-	// Check conflict with another gateway of the same user
-	var conflicting Node
-	conflictResult := DB.Joins("JOIN gateways ON gateways.id = nodes.gateway_id").
-		Where("nodes.device_id = ? AND gateways.user_id = ? AND nodes.gateway_id != ?",
-			req.DeviceID, userID, gwID).
-		First(&conflicting)
-	if conflictResult.Error == nil && !req.Force {
-		var conflictingGW Gateway
-		DB.First(&conflictingGW, "id = ?", conflicting.GatewayID)
-		c.JSON(http.StatusConflict, gin.H{
-			"status": "gateway_conflict",
-			"conflicting_gateway": gin.H{
-				"id":   conflictingGW.ID,
-				"name": conflictingGW.Name,
-			},
-			"message": fmt.Sprintf("This node is already linked to gateway \"%s\". Click Add again to switch it to this gateway.", conflictingGW.Name),
-		})
+	dec := decidePairing(req.DeviceID, gwID, req.Code)
+	if dec.Status != 0 {
+		c.JSON(dec.Status, dec.Body)
 		return
 	}
+	conflicting := dec.Conflicting
 
 	apiKey := generateNodeAPIKey()
 	now := time.Now()
@@ -394,7 +401,7 @@ func ProvisionNode(c *gin.Context) {
 		DB.Save(&existing)
 		RemoveDiscoveredNode(gwID, req.DeviceID)
 
-		if err := SendProvision(gwID, req.DeviceID, apiKey, existing.DeviceType, existing.Name, req.CapabilitiesConfig); err != nil {
+		if err := SendProvisionCode(gwID, req.DeviceID, apiKey, existing.DeviceType, existing.Name, capsOrStored(req.CapabilitiesConfig, existing), dec.Code); err != nil {
 			c.JSON(http.StatusOK, gin.H{
 				"status":  "registered_but_offline",
 				"node":    existing,
@@ -408,23 +415,23 @@ func ProvisionNode(c *gin.Context) {
 		return
 	}
 
-	// Force-move from another gateway
-	if conflictResult.Error == nil {
-		DB.Delete(&conflicting) // remove old record, will recreate on telemetry
-	}
-
-	// Brand-new node — deferred provision: no DB record until telemetry arrives
+	// Moving from another gateway: the old record goes only once the new
+	// gateway has the frame, so the node's code is never lost.
 	RemoveDiscoveredNode(gwID, req.DeviceID)
 
-	if err := SendProvision(gwID, req.DeviceID, apiKey, 0, req.Name, req.CapabilitiesConfig); err != nil {
+	if err := SendProvisionCode(gwID, req.DeviceID, apiKey, 0, req.Name, req.CapabilitiesConfig, dec.Code); err != nil {
 		c.JSON(http.StatusOK, gin.H{
 			"status":  "registered_but_offline",
 			"message": "Gateway is offline; provision key will be sent when gateway reconnects",
 		})
 		return
 	}
+	if conflicting != nil {
+		invalidateTelemetryCache(req.DeviceID)
+		DB.Delete(conflicting)
+	}
 
-	addPendingProvision(req.DeviceID, gwID, apiKey, 0, req.Name, capsDB)
+	addPendingProvision(req.DeviceID, gwID, apiKey, 0, req.Name, capsDB, dec.Code, adoptFromID(adopt, req.DeviceID))
 	LogAudit(c, "node_provisioning", "gateway", &gw.ID, fmt.Sprintf("Node %d provisioning sent (awaiting activation) on gateway: %s", req.DeviceID, gw.Name))
 
 	c.JSON(http.StatusOK, gin.H{
@@ -450,6 +457,12 @@ func ProvisionNodeToGateway(c *gin.Context) {
 		return
 	}
 
+	adopt, st, body := resolveAdopt(userID, req.AdoptCode, req.DeviceID, &req.Name, &req.CapabilitiesConfig)
+	if st != 0 {
+		c.JSON(st, body)
+		return
+	}
+
 	if len(req.CapabilitiesConfig) > 0 {
 		if err := validateCapabilities(req.CapabilitiesConfig); err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
@@ -469,25 +482,12 @@ func ProvisionNodeToGateway(c *gin.Context) {
 	apiKey := generateNodeAPIKey()
 	now := time.Now()
 
-	// Check conflict with another gateway of same user
-	var conflicting Node
-	conflictResult := DB.Joins("JOIN gateways ON gateways.id = nodes.gateway_id").
-		Where("nodes.device_id = ? AND gateways.user_id = ? AND nodes.gateway_id != ?",
-			req.DeviceID, userID, req.GatewayID).
-		First(&conflicting)
-	if conflictResult.Error == nil && !req.Force {
-		var conflictingGW Gateway
-		DB.First(&conflictingGW, "id = ?", conflicting.GatewayID)
-		c.JSON(http.StatusConflict, gin.H{
-			"status": "gateway_conflict",
-			"conflicting_gateway": gin.H{
-				"id":   conflictingGW.ID,
-				"name": conflictingGW.Name,
-			},
-			"message": fmt.Sprintf("This node is already linked to gateway \"%s\". Click Add again to switch it to this gateway.", conflictingGW.Name),
-		})
+	dec := decidePairing(req.DeviceID, req.GatewayID, req.Code)
+	if dec.Status != 0 {
+		c.JSON(dec.Status, dec.Body)
 		return
 	}
+	conflicting := dec.Conflicting
 
 	// Same gateway re-provision
 	var existing Node
@@ -503,7 +503,7 @@ func ProvisionNodeToGateway(c *gin.Context) {
 		DB.Save(&existing)
 		RemoveDiscoveredNode(req.GatewayID, req.DeviceID)
 
-		if err := SendProvision(req.GatewayID, req.DeviceID, apiKey, existing.DeviceType, existing.Name, req.CapabilitiesConfig); err != nil {
+		if err := SendProvisionCode(req.GatewayID, req.DeviceID, apiKey, existing.DeviceType, existing.Name, capsOrStored(req.CapabilitiesConfig, existing), dec.Code); err != nil {
 			c.JSON(http.StatusOK, gin.H{
 				"status":  "registered_but_offline",
 				"node":    existing,
@@ -516,23 +516,23 @@ func ProvisionNodeToGateway(c *gin.Context) {
 		return
 	}
 
-	// Force-move from another gateway
-	if conflictResult.Error == nil {
-		DB.Delete(&conflicting)
-	}
-
-	// Brand-new node — deferred provision
+	// Moving from another gateway: the old record goes only once the new
+	// gateway has the frame, so the node's code is never lost.
 	RemoveDiscoveredNode(req.GatewayID, req.DeviceID)
 
-	if err := SendProvision(req.GatewayID, req.DeviceID, apiKey, 0, req.Name, req.CapabilitiesConfig); err != nil {
+	if err := SendProvisionCode(req.GatewayID, req.DeviceID, apiKey, 0, req.Name, req.CapabilitiesConfig, dec.Code); err != nil {
 		c.JSON(http.StatusOK, gin.H{
 			"status":  "registered_but_offline",
 			"message": "Gateway is offline; provision key will be sent when gateway reconnects",
 		})
 		return
 	}
+	if conflicting != nil {
+		invalidateTelemetryCache(req.DeviceID)
+		DB.Delete(conflicting)
+	}
 
-	addPendingProvision(req.DeviceID, req.GatewayID, apiKey, 0, req.Name, capDB)
+	addPendingProvision(req.DeviceID, req.GatewayID, apiKey, 0, req.Name, capDB, dec.Code, adoptFromID(adopt, req.DeviceID))
 	LogAudit(c, "node_provisioning", "gateway", &gw.ID, fmt.Sprintf("Node %d provisioning sent (awaiting activation) on gateway: %s", req.DeviceID, gw.Name))
 
 	c.JSON(http.StatusOK, gin.H{
@@ -709,7 +709,7 @@ func HMIListAllNodes(c *gin.Context) {
 			provisionedIDs[n.DeviceID] = true
 		}
 		for devID := range discovered {
-			if !provisionedIDs[devID] {
+			if _, paired := discoveryState(devID); !provisionedIDs[devID] && !paired {
 				resp = append(resp, HMIDeviceInfo{
 					DeviceID:      devID,
 					Name:          "Device " + strconv.FormatUint(uint64(devID), 10),

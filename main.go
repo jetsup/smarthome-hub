@@ -218,6 +218,8 @@ func main() {
 		api.PUT("/nodes/:nodeId/capabilities", hub.UpdateNodeCapabilities)
 		api.PUT("/nodes/:nodeId", hub.UpdateNode)
 		api.POST("/nodes/:nodeId/restart", hub.RestartNode)
+		api.POST("/nodes/:nodeId/reload-config", hub.ReloadNodeConfig)
+		api.POST("/gateways/:id/reload-nodes", hub.ReloadGatewayNodes)
 		api.POST("/gateways/:id/restart-nodes", hub.RestartGatewayNodes)
 
 		// Device ping (updates LastSeen)

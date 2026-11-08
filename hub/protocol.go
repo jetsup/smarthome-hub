@@ -24,6 +24,7 @@ const (
 	msgReadings = 8  // node -> hub: repeated {capIdx, channel, int32 value}
 	msgAction   = 9  // hub  -> node: {capIdx, action, args...}
 	msgTime     = 11 // gateway -> nodes: {epoch uint32, source}
+	msgIdent    = 13 // node -> hub: the node's MAC address
 	msgBoot     = 12 // node -> hub: "I just (re)started" - the hub restores outputs
 )
 

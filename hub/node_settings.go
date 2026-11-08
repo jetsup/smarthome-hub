@@ -95,3 +95,48 @@ func RestartGatewayNodes(c *gin.Context) {
 	LogAudit(c, "gateway_nodes_restarted", "gateway", &gw.ID, fmt.Sprintf("Restart sent to %d node(s) on %s", len(ids), gw.Name))
 	c.JSON(http.StatusOK, gin.H{"status": "restarting", "count": len(ids)})
 }
+
+// sendSavedConfig pushes everything the hub has saved for a node (key, name,
+// modules, pairing code) to it through its gateway. A node that lost its
+// settings (flash erased, reflashed) is set up again; a healthy node just
+// restarts with the same settings.
+func sendSavedConfig(n Node) error {
+	return SendProvision(n.GatewayID, n.DeviceID, n.APIKey, n.DeviceType, n.Name, parseCapabilitiesConfig(n.CapabilitiesConfig))
+}
+
+// POST /api/nodes/:nodeId/reload-config
+func ReloadNodeConfig(c *gin.Context) {
+	node, ok := userNode(c)
+	if !ok {
+		return
+	}
+	if err := sendSavedConfig(node); err != nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "The gateway is offline, so the settings can't be sent"})
+		return
+	}
+	LogAudit(c, "node_config_reloaded", "node", &node.NodeID, fmt.Sprintf("Saved settings sent to node %s (%s)", node.NodeID, node.Name))
+	c.JSON(http.StatusOK, gin.H{"status": "sent", "nodeId": node.NodeID})
+}
+
+// POST /api/gateways/:id/reload-nodes - the same for every node on a gateway.
+func ReloadGatewayNodes(c *gin.Context) {
+	var gw Gateway
+	if err := DB.First(&gw, "id = ? AND user_id = ?", c.Param("id"), c.GetUint("userID")).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Gateway not found"})
+		return
+	}
+	if getTCPConn(gw.ID) == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "The gateway is offline"})
+		return
+	}
+	var nodes []Node
+	DB.Where("gateway_id = ?", gw.ID).Find(&nodes)
+	go func() {
+		for _, n := range nodes {
+			_ = sendSavedConfig(n)
+			time.Sleep(400 * time.Millisecond) // each frame is repeated; keep the radio free
+		}
+	}()
+	LogAudit(c, "gateway_nodes_reloaded", "gateway", &gw.ID, fmt.Sprintf("Saved settings sent to %d node(s) on %s", len(nodes), gw.Name))
+	c.JSON(http.StatusOK, gin.H{"status": "sent", "count": len(nodes)})
+}

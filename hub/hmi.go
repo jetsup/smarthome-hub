@@ -131,7 +131,7 @@ func createHmi(gw Gateway, deviceID, name string) (*Hmi, error) {
 			DB.Model(&Hmi{}).Where("user_id = ?", gw.UserID).Count(&n)
 			name = "Display " + itoa(int(n)+1)
 		}
-		h = Hmi{DeviceID: deviceID, GatewayID: gw.ID, UserID: gw.UserID, Name: name, LastSeen: now}
+		h = Hmi{DeviceID: deviceID, Mac: normMac(deviceID), GatewayID: gw.ID, UserID: gw.UserID, Name: name, LastSeen: now}
 		if err := DB.Create(&h).Error; err != nil {
 			return nil, err
 		}

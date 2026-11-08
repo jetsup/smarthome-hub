@@ -34,6 +34,10 @@ func handleVariableFrame(gatewayID string, msgType byte, deviceID uint32, payloa
 			return
 		}
 		ingestReadings(gatewayID, deviceID, rs)
+	case msgIdent:
+		if len(payload) >= 6 {
+			recordMac(deviceID, fmt.Sprintf("%02X:%02X:%02X:%02X:%02X:%02X", payload[0], payload[1], payload[2], payload[3], payload[4], payload[5]))
+		}
 	case msgBoot:
 		restoreNodeState(gatewayID, deviceID)
 	default:

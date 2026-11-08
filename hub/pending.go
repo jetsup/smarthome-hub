@@ -17,6 +17,8 @@ type pendingProvision struct {
 	DeviceType         uint8
 	Name               string
 	CapabilitiesConfig string
+	PairCode           string
+	AdoptFrom          uint32
 }
 
 var (
@@ -25,7 +27,7 @@ var (
 	pendingDeviceTypes = make(map[uint32]uint8) // deviceID -> deviceType (from discovery)
 )
 
-func addPendingProvision(deviceID uint32, gatewayID, apiKey string, deviceType uint8, name, caps string) {
+func addPendingProvision(deviceID uint32, gatewayID, apiKey string, deviceType uint8, name, caps, pairCode string, adoptFrom uint32) {
 	pendingProvisionMu.Lock()
 	defer pendingProvisionMu.Unlock()
 	pendingProvisions[deviceID] = &pendingProvision{
@@ -35,9 +37,11 @@ func addPendingProvision(deviceID uint32, gatewayID, apiKey string, deviceType u
 		DeviceType:         deviceType,
 		Name:               name,
 		CapabilitiesConfig: caps,
+		PairCode:           pairCode,
+		AdoptFrom:          adoptFrom,
 	}
 	DB.Save(&PendingProvisionRow{DeviceID: deviceID, GatewayID: gatewayID, APIKey: apiKey, DeviceType: deviceType,
-		Name: name, CapabilitiesConfig: caps, CreatedAt: time.Now()})
+		Name: name, CapabilitiesConfig: caps, PairCode: pairCode, AdoptFrom: adoptFrom, CreatedAt: time.Now()})
 }
 
 // pendingProvisionTTL: a node that never reports within this long is forgotten.
@@ -52,7 +56,7 @@ func LoadPendingProvisions() {
 	defer pendingProvisionMu.Unlock()
 	for _, r := range rows {
 		pendingProvisions[r.DeviceID] = &pendingProvision{DeviceID: r.DeviceID, GatewayID: r.GatewayID, APIKey: r.APIKey,
-			DeviceType: r.DeviceType, Name: r.Name, CapabilitiesConfig: r.CapabilitiesConfig}
+			DeviceType: r.DeviceType, Name: r.Name, CapabilitiesConfig: r.CapabilitiesConfig, PairCode: r.PairCode, AdoptFrom: r.AdoptFrom}
 	}
 }
 
@@ -171,4 +175,10 @@ func executePendingActions(gatewayID string) {
 			}
 		}
 	}
+}
+
+func pendingFor(deviceID uint32) *pendingProvision {
+	pendingProvisionMu.RLock()
+	defer pendingProvisionMu.RUnlock()
+	return pendingProvisions[deviceID]
 }

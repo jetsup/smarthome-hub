@@ -94,9 +94,15 @@ func encodeAction(ct *CapType, cap CapabilityConfig, act *CapAction, params map[
 		if b, ok := params["reverse"].(bool); ok && b {
 			rev = 1
 		}
+		// Random colour only where the pattern can use it; otherwise it falls back
+		// to the chosen (default) colour.
+		rnd := 0
+		if b, ok := params["random"].(bool); ok && b && neoRandomOK(pat) {
+			rnd = 1
+		}
 		clean = map[string]interface{}{"pattern": pat, "color": fmt.Sprintf("#%02X%02X%02X", col[0], col[1], col[2]),
-			"speed": speed, "brightness": bright, "reverse": rev == 1}
-		return byte(act.ID), []byte{byte(pat), col[0], col[1], col[2], byte(speed), byte(bright), byte(rev)}, clean, nil
+			"speed": speed, "brightness": bright, "reverse": rev == 1, "random": rnd == 1}
+		return byte(act.ID), []byte{byte(pat), col[0], col[1], col[2], byte(speed), byte(bright), byte(rev), byte(rnd)}, clean, nil
 	case "buzzer":
 		pat := num(params["pattern"], 1)
 		ok := false

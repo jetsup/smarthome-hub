@@ -30,6 +30,9 @@ type ActionParam struct {
 	Max     int         `json:"max,omitempty"`
 	Default interface{} `json:"default,omitempty"`
 	Choices []Choice    `json:"choices,omitempty"`
+	// Colour params only: a "random colour" choice exists, except for the listed patterns.
+	AllowRandom bool  `json:"allowRandom,omitempty"`
+	NoRandom    []int `json:"noRandom,omitempty"`
 }
 
 type Choice struct {
@@ -66,6 +69,20 @@ var neoPatterns = []Choice{
 	{24, "Rainbow spin", true}, {25, "Loader fill", true}, {26, "Wave", true}, {27, "Clock sweep", true},
 }
 
+// Patterns that already bring their own colours (or only use black/white), so
+// a random colour makes no sense: Off, Solid colour, Rainbow, Rainbow cycle,
+// Fire, Gradient pulse, Rainbow spin.
+var neoNoRandom = []int{0, 1, 4, 5, 11, 13, 24}
+
+func neoRandomOK(pattern int) bool {
+	for _, p := range neoNoRandom {
+		if p == pattern {
+			return false
+		}
+	}
+	return true
+}
+
 var buzzPatterns = []Choice{
 	{0, "Stop", false}, {1, "Beep", false}, {2, "Double beep", false}, {3, "Triple beep", false},
 	{4, "Alarm", false}, {5, "Siren", false}, {6, "Chime", false}, {7, "Doorbell", false},
@@ -92,7 +109,7 @@ var capCatalog = []CapType{
 		},
 		Actions: []CapAction{{ID: 1, Key: "setEffect", Label: "Set pattern", Params: []ActionParam{
 			{Key: "pattern", Label: "Pattern", Kind: "pattern", Default: 1, Choices: neoPatterns},
-			{Key: "color", Label: "Colour", Kind: "color", Default: "#00A8E8"},
+			{Key: "color", Label: "Colour", Kind: "color", Default: "#00A8E8", AllowRandom: true, NoRandom: neoNoRandom},
 			{Key: "speed", Label: "Speed", Kind: "range", Min: 1, Max: 100, Default: 50},
 			{Key: "brightness", Label: "Brightness", Kind: "range", Min: 1, Max: 100, Default: 60},
 			{Key: "reverse", Label: "Reverse direction", Kind: "bool", Default: false},

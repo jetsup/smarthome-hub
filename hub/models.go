@@ -68,6 +68,7 @@ type Gateway struct {
 	IsOnline         bool       `gorm:"default:false" json:"online"`
 	LastSeen         time.Time  `json:"lastSeen"`
 	APIKeyAssignedAt *time.Time `json:"apiKeyAssignedAt"`
+	Mac              string     `gorm:"size:17" json:"mac"` // hardware (MAC) address, as reported by the gateway
 	// WifiDirty: the saved-network list was changed on the hub while (or without
 	// the gateway confirming) so the hub list must overwrite the gateway's.
 	WifiDirty bool      `gorm:"default:false" json:"-"`
@@ -106,6 +107,8 @@ type Node struct {
 	Readings           string     `gorm:"type:text" json:"-"`               // latest sensor readings (JSON)
 	Effects            string     `gorm:"type:text" json:"-"`               // last actuator settings per capability (JSON)
 	Outputs            string     `gorm:"type:text" json:"-"`               // last commanded output pin values (JSON pin->value)
+	Mac                string     `gorm:"size:17" json:"mac"`               // hardware (MAC) address, as reported by the node
+	PairCode           *string    `gorm:"size:12;uniqueIndex" json:"-"`     // unique code needed to move the node to another gateway
 	CapsPending        bool       `gorm:"default:false" json:"capsPending"` // new pins saved but not yet delivered to the node
 	// HmiID: the one display this node is shown on / controlled from. A node is
 	// never shared between displays; nil = not assigned to any display.
@@ -119,6 +122,7 @@ type Hmi struct {
 	Slugged
 	ID        uint      `gorm:"primaryKey" json:"id"`
 	DeviceID  string    `gorm:"uniqueIndex;size:40;not null" json:"deviceId"` // hardware id (MAC) or legacy-*
+	Mac       string    `gorm:"size:17" json:"mac"`
 	GatewayID string    `gorm:"index;size:16;not null" json:"gatewayId"`
 	UserID    uint      `gorm:"index;not null" json:"-"`
 	Name      string    `gorm:"size:64;not null" json:"name"`
@@ -171,6 +175,8 @@ type PendingProvisionRow struct {
 	DeviceType         uint8
 	Name               string `gorm:"size:64"`
 	CapabilitiesConfig string `gorm:"type:text"`
+	PairCode           string `gorm:"size:12"`
+	AdoptFrom          uint32 // device id of the node whose settings this one takes over
 	CreatedAt          time.Time
 }
 
@@ -342,13 +348,34 @@ var (
 	discoveredMu    sync.RWMutex
 )
 
-func AddDiscoveredNode(gatewayID string, deviceID uint32) {
+func AddDiscoveredNode(gatewayID string, deviceID uint32, paired bool) {
 	discoveredMu.Lock()
 	defer discoveredMu.Unlock()
 	if DiscoveredNodes[gatewayID] == nil {
 		DiscoveredNodes[gatewayID] = make(map[uint32]int64)
 	}
 	DiscoveredNodes[gatewayID][deviceID] = nowMillis()
+	discoveredPaired[deviceID] = discoveredState{paired: paired, at: nowMillis()}
+}
+
+// discoveredState is what the node itself last said: is it already paired?
+type discoveredState struct {
+	paired bool
+	at     int64
+}
+
+var discoveredPaired = make(map[uint32]discoveredState)
+
+// discoveryState reports whether the node was heard recently and, if so,
+// whether it says it is already paired to a gateway.
+func discoveryState(deviceID uint32) (seen, paired bool) {
+	discoveredMu.RLock()
+	defer discoveredMu.RUnlock()
+	st, ok := discoveredPaired[deviceID]
+	if !ok || st.at < nowMillis()-DiscoveredNodeTTL {
+		return false, false
+	}
+	return true, st.paired
 }
 
 func nowMillis() int64 {
@@ -408,6 +435,10 @@ type DiscoveredNodeInfo struct {
 	DeviceID   uint32 `json:"deviceId"`
 	GatewayID  string `json:"gatewayId"`
 	DeviceType uint8  `json:"deviceType"`
+	Paired     bool   `json:"paired"`              // already paired to a gateway: needs its code
+	Known      bool   `json:"known,omitempty"`     // this gateway still has a saved record for it, but the node itself was reset
+	KnownName  string `json:"knownName,omitempty"` // that record's name
+	Mac        string `json:"mac,omitempty"`
 }
 
 func GetAllDiscoveredNodes() []DiscoveredNodeInfo {
@@ -419,6 +450,7 @@ func GetAllDiscoveredNodes() []DiscoveredNodeInfo {
 			result = append(result, DiscoveredNodeInfo{
 				DeviceID:  devID,
 				GatewayID: gwID,
+				Paired:    discoveredPaired[devID].paired,
 			})
 		}
 	}
@@ -432,6 +464,8 @@ func AutoMigrate(db *gorm.DB) error {
 		return err
 	}
 	backfillSlugs(db)
+	defer backfillPairCodes()
+	defer backfillMacs()
 	// Create unique composite index for bindings (no-op if already exists)
 	if !db.Migrator().HasIndex(&CapabilityBinding{}, "idx_unique_binding") {
 		db.Migrator().CreateIndex(&CapabilityBinding{}, "idx_unique_binding")
