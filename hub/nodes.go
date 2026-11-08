@@ -98,6 +98,9 @@ type CrossProvisionRequest struct {
 // a factory reset. It is reserved for internal use (disconnect / gateway delete).
 const ResetCommandValue = 99
 
+// RestartCommandValue makes a node reboot (nothing is erased).
+const RestartCommandValue = 98
+
 type ControlRequest struct {
 	Value uint16 `json:"value"`
 	Pin   *int   `json:"pin,omitempty"`
@@ -285,7 +288,7 @@ func ListNodes(c *gin.Context) {
 	for _, n := range nodes {
 		resp = append(resp, NodeResponse{
 			Node:     n,
-			IsOnline: isNodeOnline(n.LastSeen),
+			IsOnline: isNodeOnline(n.LastSeen) && getTCPConn(n.GatewayID) != nil,
 		})
 	}
 
@@ -650,8 +653,8 @@ func ControlNode(c *gin.Context) {
 		if err := SendPinCommandToGateway(node.GatewayID, node.DeviceID, uint8(pin), req.Value); err != nil {
 			fmt.Printf("ControlNode: gateway %s offline, pin value stored locally\n", node.GatewayID)
 		}
-	} else if req.Value == ResetCommandValue {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "value 99 is reserved"})
+	} else if req.Value == ResetCommandValue || req.Value == RestartCommandValue {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "values 98 and 99 are reserved"})
 		return
 	} else if err := SendCommandToGateway(node.GatewayID, node.DeviceID, 2, req.Value); err != nil {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "Gateway is offline"})
@@ -691,7 +694,7 @@ func HMIListAllNodes(c *gin.Context) {
 		resp = append(resp, HMIDeviceInfo{
 			DeviceID:      n.DeviceID,
 			Name:          n.Name,
-			IsOnline:      isNodeOnline(n.LastSeen),
+			IsOnline:      isNodeOnline(n.LastSeen) && getTCPConn(n.GatewayID) != nil,
 			IsProvisioned: true,
 			Value:         n.LastValue,
 			Capabilities:  caps,
@@ -752,7 +755,7 @@ func HMIListNodes(c *gin.Context) {
 	for _, n := range nodes {
 		resp = append(resp, NodeResponse{
 			Node:     n,
-			IsOnline: isNodeOnline(n.LastSeen),
+			IsOnline: isNodeOnline(n.LastSeen) && getTCPConn(n.GatewayID) != nil,
 		})
 	}
 
@@ -802,6 +805,13 @@ func HMIControlNode(c *gin.Context) {
 		return
 	}
 
+	// Everything reaches a node through its gateway. If the gateway is not connected
+	// the display must not be able to "control" anything.
+	if getTCPConn(node.GatewayID) == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "Gateway is offline"})
+		return
+	}
+
 	var req ControlRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
@@ -819,8 +829,8 @@ func HMIControlNode(c *gin.Context) {
 		if err := SendPinCommandToGateway(node.GatewayID, node.DeviceID, uint8(pin), req.Value); err != nil {
 			fmt.Printf("HMIControlNode: gateway %s offline, pin value stored locally\n", node.GatewayID)
 		}
-	} else if req.Value == ResetCommandValue {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "value 99 is reserved"})
+	} else if req.Value == ResetCommandValue || req.Value == RestartCommandValue {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "values 98 and 99 are reserved"})
 		return
 	} else if err := SendCommandToGateway(node.GatewayID, node.DeviceID, 2, req.Value); err != nil {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "Gateway is offline"})

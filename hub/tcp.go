@@ -127,7 +127,11 @@ func StartTCPWorker(addr string) {
 			continue
 		}
 
-		DB.Model(&gw).Update("is_online", true)
+		if tc, ok := conn.(*net.TCPConn); ok {
+			tc.SetKeepAlive(true)
+			tc.SetKeepAlivePeriod(15 * time.Second)
+		}
+		DB.Model(&gw).Updates(map[string]any{"is_online": true, "last_seen": time.Now()})
 		setTCPConn(gw.ID, conn)
 
 		LogAudit(nil, "gateway_connected", "gateway", &gw.ID, "Gateway connected from "+conn.RemoteAddr().String())

@@ -33,9 +33,10 @@ func updateGatewayStatus() {
 			log.Printf("Gateway %s marked online (TCP reconnected)", gw.ID)
 		}
 
-		// Set gateway offline if last_seen is past timeout
-		if gw.IsOnline && !gw.LastSeen.IsZero() && gw.LastSeen.Before(cutoff) {
-			log.Printf("Gateway %s last_seen timeout — marking offline", gw.ID)
+		// A live TCP connection is the source of truth: the gateway is quiet when no
+		// node is talking, so a stale last_seen must not mark it offline. Dead peers
+		// are detected by TCP keepalive (see StartTCPWorker) which closes the conn.
+		if conn == nil && gw.IsOnline && !gw.LastSeen.IsZero() && gw.LastSeen.Before(cutoff) {
 			DB.Model(&gw).Update("is_online", false)
 		}
 	}

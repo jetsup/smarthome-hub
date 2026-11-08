@@ -85,7 +85,7 @@ func LogAuditAs(c *gin.Context, userID uint, email, action, details, outcome str
 // ListAudit returns the activity of the signed-in user, their devices and displays,
 // plus events on gateways they own. Filters: category, outcome, q, before (id), limit.
 func ListAudit(c *gin.Context) {
-	rows := queryAudit(c)
+	rows, total := queryAudit(c)
 	if c.Query("format") == "csv" {
 		c.Header("Content-Type", "text/csv")
 		c.Header("Content-Disposition", `attachment; filename="smarthome-audit-`+time.Now().Format("2006-01-02")+`.csv"`)
@@ -101,7 +101,13 @@ func ListAudit(c *gin.Context) {
 	if len(rows) > 0 {
 		next = rows[len(rows)-1].ID
 	}
-	c.JSON(http.StatusOK, gin.H{"items": rows, "next": next})
+	limit := auditLimit(c)
+	page := auditPage(c)
+	pages := (int(total) + limit - 1) / limit
+	if pages < 1 {
+		pages = 1
+	}
+	c.JSON(http.StatusOK, gin.H{"items": rows, "next": next, "total": total, "page": page, "pageSize": limit, "pages": pages})
 }
 
 // csvSafe stops spreadsheet formula injection in exported text.
@@ -112,12 +118,27 @@ func csvSafe(s string) string {
 	return s
 }
 
-func queryAudit(c *gin.Context) []AuditLog {
-	uid := c.GetUint("userID")
+func auditLimit(c *gin.Context) int {
 	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "50"))
 	if limit < 1 || limit > 500 {
 		limit = 50
 	}
+	return limit
+}
+
+func auditPage(c *gin.Context) int {
+	p, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
+	if p < 1 {
+		p = 1
+	}
+	return p
+}
+
+// queryAudit returns one page of the log (newest first) and the total number of matches.
+// Pages: ?page=1&limit=50. (?before=<id> still works for cursor-style paging.)
+func queryAudit(c *gin.Context) ([]AuditLog, int64) {
+	uid := c.GetUint("userID")
+	limit := auditLimit(c)
 	if c.Query("format") == "csv" {
 		limit = 5000
 	}
@@ -142,9 +163,14 @@ func queryAudit(c *gin.Context) []AuditLog {
 	if b, _ := strconv.Atoi(c.Query("before")); b > 0 {
 		q = q.Where("id < ?", b)
 	}
+	var total int64
+	q.Count(&total)
+	if c.Query("before") == "" && c.Query("format") != "csv" {
+		q = q.Offset((auditPage(c) - 1) * limit)
+	}
 	var rows []AuditLog
 	q.Order("id DESC").Limit(limit).Find(&rows)
-	return rows
+	return rows, total
 }
 
 // auditUser logs an event for a user from code that has no request context.

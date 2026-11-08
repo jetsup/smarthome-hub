@@ -136,6 +136,9 @@ type Hmi struct {
 	LedColor      string `gorm:"size:6" json:"ledColor"`               // RRGGBB, "" = follow the accent colour
 	LedBrightness int    `gorm:"default:40" json:"ledBrightness"`      // 1-100 (%)
 	LedSpeed      int    `gorm:"default:50" json:"ledSpeed"`           // 1-100
+
+	SleepAfter  int  `gorm:"default:0" json:"sleepAfter"`     // seconds of no touch before the screen goes off, 0 = never
+	LedSleepOff bool `gorm:"default:true" json:"ledSleepOff"` // switch the RGB LED off while the screen is off
 }
 
 // Rule connects modules to each other: "when <sensor channel> <op> <threshold>, do <action>".
@@ -187,6 +190,7 @@ func (h *Hmi) BeforeCreate(tx *gorm.DB) error {
 		h.Brightness = 100
 	}
 	h.StatusLed = true
+	h.LedSleepOff = true
 	if h.LedMode == "" {
 		h.LedMode = "solid"
 	}

@@ -432,7 +432,7 @@ func GetHmi(c *gin.Context) {
 	}
 	nv := make([]hmiNodeView, 0, len(nodes))
 	for _, n := range nodes {
-		v := hmiNodeView{DeviceID: n.DeviceID, Name: n.Name, IsOnline: isNodeOnline(n.LastSeen), HmiID: n.HmiID}
+		v := hmiNodeView{DeviceID: n.DeviceID, Name: n.Name, IsOnline: isNodeOnline(n.LastSeen) && getTCPConn(n.GatewayID) != nil, HmiID: n.HmiID}
 		if n.HmiID != nil {
 			v.HmiName = names[*n.HmiID]
 		}
@@ -562,7 +562,7 @@ func HMIGetGateway(c *gin.Context) {
 		return
 	}
 	var h Hmi
-	DB.Select("id", "name", "theme", "accent", "brightness", "status_led", "background", "led_mode", "led_color", "led_brightness", "led_speed").First(&h, c.GetUint("hmiID"))
+	DB.Select("id", "name", "theme", "accent", "brightness", "status_led", "background", "led_mode", "led_color", "led_brightness", "led_speed", "sleep_after", "led_sleep_off").First(&h, c.GetUint("hmiID"))
 	c.JSON(http.StatusOK, gin.H{"id": gw.ID, "name": gw.Name, "isOnline": gw.IsOnline, "hmiId": h.ID, "hmiName": h.Name,
 		"appearance": appearanceOf(h)})
 }
@@ -597,7 +597,8 @@ func appearanceOf(h Hmi) gin.H {
 		ls = 50
 	}
 	return gin.H{"theme": theme, "accent": accent, "brightness": br, "statusLed": h.StatusLed,
-		"background": bg, "ledMode": mode, "ledColor": ledColor, "ledBrightness": lb, "ledSpeed": ls}
+		"background": bg, "ledMode": mode, "ledColor": ledColor, "ledBrightness": lb, "ledSpeed": ls,
+		"sleepAfter": h.SleepAfter, "ledSleepOff": h.LedSleepOff}
 }
 
 // Patterns the onboard RGB LED can play (the display firmware maps these to effects).
@@ -624,6 +625,8 @@ func SetHmiAppearance(c *gin.Context) {
 		LedColor      *string `json:"ledColor"`
 		LedBrightness *int    `json:"ledBrightness"`
 		LedSpeed      *int    `json:"ledSpeed"`
+		SleepAfter    *int    `json:"sleepAfter"`
+		LedSleepOff   *bool   `json:"ledSleepOff"`
 	}
 	if c.ShouldBindJSON(&req) != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request"})
@@ -691,6 +694,16 @@ func SetHmiAppearance(c *gin.Context) {
 		}
 		up["led_speed"] = *req.LedSpeed
 	}
+	if req.SleepAfter != nil {
+		if !validSleepAfter(*req.SleepAfter) {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Screen-off time must be 0 (never) or 10 to 3600 seconds"})
+			return
+		}
+		up["sleep_after"] = *req.SleepAfter
+	}
+	if req.LedSleepOff != nil {
+		up["led_sleep_off"] = *req.LedSleepOff
+	}
 	if len(up) > 0 {
 		DB.Model(&h).Updates(up)
 		DB.First(&h, h.ID)
@@ -706,4 +719,50 @@ func HMIUnpair(c *gin.Context) {
 		releaseAndDeleteHmi(h)
 	}
 	c.JSON(http.StatusOK, gin.H{"status": "unpaired"})
+}
+
+func validSleepAfter(v int) bool { return v == 0 || (v >= 10 && v <= 3600) }
+
+// HMISetDisplay lets the display itself change its power settings from its own
+// Settings screen. Same values as the app/website, stored on the hub so all agree.
+func HMISetDisplay(c *gin.Context) {
+	var req struct {
+		Brightness    *int  `json:"brightness"`
+		LedBrightness *int  `json:"ledBrightness"`
+		SleepAfter    *int  `json:"sleepAfter"`
+		LedSleepOff   *bool `json:"ledSleepOff"`
+	}
+	if c.ShouldBindJSON(&req) != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request"})
+		return
+	}
+	up := map[string]interface{}{}
+	if req.Brightness != nil {
+		if *req.Brightness < 10 || *req.Brightness > 100 {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Brightness must be 10-100"})
+			return
+		}
+		up["brightness"] = *req.Brightness
+	}
+	if req.LedBrightness != nil {
+		if *req.LedBrightness < 1 || *req.LedBrightness > 100 {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "LED brightness must be 1-100"})
+			return
+		}
+		up["led_brightness"] = *req.LedBrightness
+	}
+	if req.SleepAfter != nil {
+		if !validSleepAfter(*req.SleepAfter) {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Screen-off time must be 0 (never) or 10 to 3600 seconds"})
+			return
+		}
+		up["sleep_after"] = *req.SleepAfter
+	}
+	if req.LedSleepOff != nil {
+		up["led_sleep_off"] = *req.LedSleepOff
+	}
+	if len(up) > 0 {
+		DB.Model(&Hmi{}).Where("id = ?", c.GetUint("hmiID")).Updates(up)
+	}
+	c.JSON(http.StatusOK, gin.H{"status": "ok"})
 }

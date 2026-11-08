@@ -113,6 +113,7 @@ func main() {
 	{
 		hmi.GET("/gateway", hub.HMIGetGateway)
 		hmi.POST("/unpair", hub.HMIUnpair)
+		hmi.POST("/display", hub.HMISetDisplay)
 		hmi.GET("/gateways/:id/all-nodes", hub.HMIListAllNodes)
 		hmi.GET("/gateways/:id/nodes", hub.HMIListNodes)
 		hmi.GET("/nodes/:deviceId", hub.HMIGetNodeDetail)
@@ -215,6 +216,9 @@ func main() {
 
 		// Update node capabilities
 		api.PUT("/nodes/:nodeId/capabilities", hub.UpdateNodeCapabilities)
+		api.PUT("/nodes/:nodeId", hub.UpdateNode)
+		api.POST("/nodes/:nodeId/restart", hub.RestartNode)
+		api.POST("/gateways/:id/restart-nodes", hub.RestartGatewayNodes)
 
 		// Device ping (updates LastSeen)
 		api.POST("/devices/:id/ping", hub.PingDevice)

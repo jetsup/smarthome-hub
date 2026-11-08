@@ -213,7 +213,7 @@ Note: command value `99` is reserved (node factory reset) and rejected on user c
 
 ### Activity log (audit)
 
-`GET /api/audit?category=&outcome=ok|failed&q=&before=<id>&limit=` returns who did what, from which device and IP (sign-ins and failures, security and device changes, gateway/node/display/Wi-Fi changes); `&format=csv` exports. Shown in the web UI under **Activity log**. Covered by `scripts/mfa_e2e.py`.
+`GET /api/audit?category=&outcome=ok|failed&q=&page=1&limit=50` returns one page (newest first) plus `total`, `pages` and `page` (`before=<id>` still works for cursor paging); who did what, from which device and IP (sign-ins and failures, security and device changes, gateway/node/display/Wi-Fi changes); `&format=csv` exports. Shown in the web UI under **Activity log**. Covered by `scripts/mfa_e2e.py`.
 
 ### Links use slugs, not database ids
 
@@ -233,6 +233,9 @@ Every kind of hardware a node can carry is one entry in `hub/catalog.go` (`GET /
 | Analog / digital input | GPIO | value (per pin) | – |
 
 * `POST /api/nodes/:nodeId/action {cap, action, params}` runs an action; readings and last settings are in `GET /api/nodes/:nodeId` (`readings`, `effects`).
+* `PUT /api/nodes/:nodeId {name}` renames a node in place (no re-pairing). `POST /api/nodes/:nodeId/restart` reboots one node; `POST /api/gateways/:id/restart-nodes` reboots every node on a gateway. Pairing and saved settings are kept.
+* Display power settings (`PUT /api/hmis/:id/appearance`, also `POST /api/hmi/display` from the display itself): `sleepAfter` (seconds, 0 = never, else 10-3600), `ledSleepOff` (turn the RGB LED off with the screen), `brightness` (10-100), `ledBrightness` (1-100).
+* A gateway counts as online while its TCP link to the hub is open (TCP keepalive detects a powered-off gateway); it is not marked offline just because no node is talking.
 * **Rules** connect modules to each other: `POST /api/gateways/:id/rules` (“when DHT humidity > 65 → buzzer alarm; otherwise stop”). They fire on the edge and are listed/enabled/deleted under `/api/rules/:slug`.
 * **Shared clock**: a DS3231 becomes the system clock (`GET /api/system/time`); the hub pushes `TIME:` to every gateway, which broadcasts it to the nodes — the base for scheduled tasks.
 * Wire protocol: classic 9-byte frames, plus length-prefixed frames (type ≥ 8) for readings (8), actions (9) and time (11). Gateway→node commands are sent several times because ESP-NOW broadcasts are unacknowledged. Tested by `scripts/modules_e2e.py`.
