@@ -460,7 +460,7 @@ func GetAllDiscoveredNodes() []DiscoveredNodeInfo {
 // ── Auto-migrate all models ──────────────────────────────────────────────────
 
 func AutoMigrate(db *gorm.DB) error {
-	if err := db.AutoMigrate(&User{}, &Gateway{}, &Node{}, &AuditLog{}, &WifiCredential{}, &CapabilityBinding{}, &PendingAction{}, &Hmi{}, &MfaDevice{}, &UserSession{}, &PendingProvisionRow{}, &Rule{}); err != nil {
+	if err := db.AutoMigrate(&User{}, &Gateway{}, &Node{}, &AuditLog{}, &WifiCredential{}, &CapabilityBinding{}, &PendingAction{}, &Hmi{}, &MfaDevice{}, &UserSession{}, &PendingProvisionRow{}, &Rule{}, &DetachedNode{}); err != nil {
 		return err
 	}
 	backfillSlugs(db)

@@ -219,6 +219,9 @@ func main() {
 		api.PUT("/nodes/:nodeId", hub.UpdateNode)
 		api.POST("/nodes/:nodeId/restart", hub.RestartNode)
 		api.POST("/nodes/:nodeId/reload-config", hub.ReloadNodeConfig)
+		api.GET("/nodes/unassigned", hub.ListUnassignedNodes)
+		api.POST("/nodes/unassigned/:id/assign", hub.AssignUnassignedNode)
+		api.DELETE("/nodes/unassigned/:id", hub.ForgetUnassignedNode)
 		api.POST("/gateways/:id/reload-nodes", hub.ReloadGatewayNodes)
 		api.POST("/gateways/:id/restart-nodes", hub.RestartGatewayNodes)
 

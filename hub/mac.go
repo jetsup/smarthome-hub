@@ -70,7 +70,17 @@ func backfillMacs() {
 // replaces had: the display it is shown on, its last light/sound settings, and
 // the bindings and rules that pointed at it. The replaced record is removed.
 func adoptSettings(n *Node, oldDevice uint32) {
-	if oldDevice == 0 || oldDevice == n.DeviceID {
+	if oldDevice == 0 {
+		return
+	}
+	// A node handed over from a deleted gateway gets its saved state back.
+	var det DetachedNode
+	if DB.Where("device_id = ?", oldDevice).First(&det).Error == nil && oldDevice == n.DeviceID {
+		n.Effects, n.Outputs = det.Effects, det.Outputs
+		DB.Delete(&det)
+		return
+	}
+	if oldDevice == n.DeviceID {
 		return
 	}
 	var old Node
