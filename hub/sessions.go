@@ -132,8 +132,16 @@ func ListSessions(c *gin.Context) {
 	cur, _ := c.Get("sid")
 	curID, _ := cur.(uint)
 	out := make([]sessionView, 0, len(ss))
+	// This device first; the others stay in order of when they were last seen.
 	for _, s := range ss {
-		out = append(out, sessionView{UserSession: s, Current: curID != 0 && s.ID == curID})
+		if curID != 0 && s.ID == curID {
+			out = append(out, sessionView{UserSession: s, Current: true})
+		}
+	}
+	for _, s := range ss {
+		if !(curID != 0 && s.ID == curID) {
+			out = append(out, sessionView{UserSession: s})
+		}
 	}
 	c.JSON(http.StatusOK, out)
 }

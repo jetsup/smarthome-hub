@@ -194,6 +194,11 @@ func DeleteGateway(c *gin.Context) {
 		return
 	}
 
+	// Deleting a gateway needs the account password.
+	if _, ok := verifyPasswordBody(c); !ok {
+		return
+	}
+
 	// Verify the gateway belongs to this user
 	var gw Gateway
 	if err := DB.Where("id = ? AND user_id = ?", id, userID).First(&gw).Error; err != nil {
@@ -201,13 +206,14 @@ func DeleteGateway(c *gin.Context) {
 		return
 	}
 
-	// Nodes are NOT reset: they stay as they are and are kept as unassigned nodes
+	// Nodes that are online are unpaired and can be discovered by any gateway.
+	// Nodes that cannot be reached are NOT reset: they stay as they are and are kept as unassigned nodes
 	// that can be given to another gateway. This works the same whether the
 	// gateway is online or not.
-	kept := detachGateway(gw)
-	LogAudit(c, "gateway_deleted", "gateway", &id, fmt.Sprintf("Gateway deleted: %s (%d node(s) kept as unassigned)", gw.Name, kept))
+	kept, unpaired := detachGateway(gw)
+	LogAudit(c, "gateway_deleted", "gateway", &id, fmt.Sprintf("Gateway deleted: %s (%d node(s) unpaired, %d kept as unassigned)", gw.Name, unpaired, kept))
 
-	c.JSON(http.StatusOK, gin.H{"status": "deleted", "keptNodes": kept})
+	c.JSON(http.StatusOK, gin.H{"status": "deleted", "keptNodes": kept, "unpairedNodes": unpaired})
 }
 
 func GetGatewayAPIKey(c *gin.Context) {

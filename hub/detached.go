@@ -30,10 +30,27 @@ type DetachedNode struct {
 
 // detachGateway removes a gateway and everything that belongs to it, but keeps
 // its nodes: they are not reset, only remembered as unassigned.
-func detachGateway(gw Gateway) int {
+//
+// A node that is online right now is unpaired instead (its memory is cleared),
+// so it is free to be discovered and paired by any gateway nearby. Nodes that
+// cannot be reached are kept so they are not lost.
+func detachGateway(gw Gateway) (kept, unpaired int) {
 	var nodes []Node
 	DB.Where("gateway_id = ?", gw.ID).Find(&nodes)
+	live := getTCPConn(gw.ID) != nil
 	for _, n := range nodes {
+		if live && isNodeOnline(n.LastSeen) {
+			if err := SendCommandToGateway(gw.ID, n.DeviceID, 2, ResetCommandValue); err == nil {
+				unpaired++
+				registryDelete(n.DeviceID)
+				clearPinValues(n.DeviceID)
+				invalidateTelemetryCache(n.DeviceID)
+				DB.Where("device_id = ?", n.DeviceID).Delete(&DetachedNode{})
+				time.Sleep(150 * time.Millisecond) // frames are repeated; keep the radio free
+				continue
+			}
+		}
+		kept++
 		code := ensureNodeCode(&n)
 		d := DetachedNode{
 			UserID: gw.UserID, DeviceID: n.DeviceID, NodeID: n.NodeID, Name: n.Name, DeviceType: n.DeviceType,
@@ -54,7 +71,7 @@ func detachGateway(gw Gateway) int {
 	deleteHmisOfGateway(gw.ID)
 	DB.Where("gateway_id = ?", gw.ID).Delete(&Node{})
 	DB.Delete(&Gateway{}, "id = ?", gw.ID)
-	return len(nodes)
+	return kept, unpaired
 }
 
 // GET /api/nodes/unassigned

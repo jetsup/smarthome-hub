@@ -140,3 +140,26 @@ func ReloadGatewayNodes(c *gin.Context) {
 	LogAudit(c, "gateway_nodes_reloaded", "gateway", &gw.ID, fmt.Sprintf("Saved settings sent to %d node(s) on %s", len(nodes), gw.Name))
 	c.JSON(http.StatusOK, gin.H{"status": "sent", "count": len(nodes)})
 }
+
+// POST /api/nodes/:nodeId/unpair - the node forgets its gateway and is free to
+// be discovered and paired by any gateway in range. Its record is removed here.
+func UnpairNode(c *gin.Context) {
+	node, ok := userNode(c)
+	if !ok {
+		return
+	}
+	if err := SendCommandToGateway(node.GatewayID, node.DeviceID, 2, ResetCommandValue); err != nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "The gateway is offline, so the node can't be told to unpair"})
+		return
+	}
+	invalidateTelemetryCache(node.DeviceID)
+	registryDelete(node.DeviceID)
+	clearPinValues(node.DeviceID)
+	for _, m := range []any{&CapabilityBinding{}, &Rule{}} {
+		DB.Where("source_device_id = ? OR target_device_id = ?", node.DeviceID, node.DeviceID).Delete(m)
+	}
+	DB.Where("device_id = ?", node.DeviceID).Delete(&DetachedNode{})
+	DB.Delete(&node)
+	LogAudit(c, "node_unpaired", "node", &node.NodeID, fmt.Sprintf("Node %d (%s) unpaired from its gateway", node.DeviceID, node.Name))
+	c.JSON(http.StatusOK, gin.H{"status": "unpaired", "deviceId": node.DeviceID})
+}
