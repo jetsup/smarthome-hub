@@ -12,6 +12,7 @@ func decorateCaps(node Node) []CapabilityConfig {
 		return nil
 	}
 	pv := getPinValues(node.DeviceID)
+	saved := savedOutputs(outKey{node.GatewayID, node.DeviceID})
 	rs := readingsFor(node)
 	effects := effectsFor(node)
 	val := func(cap int, ch string) (ReadingValue, bool) {
@@ -23,6 +24,11 @@ func decorateCaps(node Node) []CapabilityConfig {
 		return ReadingValue{}, false
 	}
 	for i, c := range caps {
+		if _, ok := pv[uint8(c.Pin)]; !ok && (c.Type == "digitalOutput" || c.Type == "analogOutput" || c.Type == "relay") {
+			sv := saved[uint8(c.Pin)]
+			caps[i].Value = &sv
+			continue
+		}
 		if v, ok := pv[uint8(c.Pin)]; ok && (c.Type == "analogInput" || c.Type == "digitalInput" || c.Type == "digitalOutput" || c.Type == "analogOutput" || c.Type == "relay") {
 			v := v
 			caps[i].Value = &v

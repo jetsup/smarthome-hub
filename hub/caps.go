@@ -37,6 +37,9 @@ func validateCapabilities(caps []CapabilityConfig) error {
 		if len(c.Label) > 10 {
 			return fmt.Errorf("Label \"%s\" is longer than 10 characters", c.Label)
 		}
+		if c.Symbol != "" && !symbolRe.MatchString(c.Symbol) {
+			return fmt.Errorf("Invalid symbol \"%s\"", c.Symbol)
+		}
 		ct := capTypeByKey(c.Type)
 		if ct == nil {
 			return fmt.Errorf("Unknown module type \"%s\"", c.Type)

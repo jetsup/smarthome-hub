@@ -250,6 +250,14 @@ func handleGatewayConnection(gatewayID string, conn net.Conn, reader *bufio.Read
 			line = strings.TrimSpace(line)
 			// Update gateway last_seen on any incoming message
 			DB.Model(&Gateway{}).Where("id = ?", gatewayID).Update("last_seen", time.Now())
+			if strings.HasPrefix(line, "LOG:") {
+				handleGatewayLog(gatewayID, line) // bulk data: not echoed to the log
+				continue
+			}
+			if strings.HasPrefix(line, "LOGSTAT:") {
+				handleGatewayLogStat(gatewayID, line)
+				continue
+			}
 			log.Printf("TEXT from gateway %s: %s", gatewayID, line)
 
 			// Parse ACK messages and signal any waiting goroutines
@@ -288,6 +296,7 @@ func handleGatewayConnection(gatewayID string, conn net.Conn, reader *bufio.Read
 							log.Printf("GWNAME to gateway %s failed: %v", gatewayID, err)
 						}
 					}
+					sendLogConfig(gatewayID)
 				}
 			}
 

@@ -114,7 +114,7 @@ func createHmi(gw Gateway, deviceID, name string) (*Hmi, error) {
 	now := time.Now()
 
 	var h Hmi
-	if DB.Where("device_id = ?", deviceID).First(&h).Error == nil {
+	if DB.Omit("lock_bg").Where("device_id = ?", deviceID).First(&h).Error == nil {
 		// Same hardware paired again (maybe to another gateway): drop old assignments.
 		DB.Model(&Node{}).Where("hmi_id = ?", h.ID).Update("hmi_id", nil)
 		h.GatewayID, h.UserID, h.LastSeen = gw.ID, gw.UserID, now
@@ -394,7 +394,7 @@ func firstNonEmpty(a, b string) string {
 
 func ownedHmi(c *gin.Context) (Hmi, bool) {
 	var h Hmi
-	if err := DB.Where("slug = ? AND user_id = ?", c.Param("id"), c.GetUint("userID")).First(&h).Error; err != nil {
+	if err := DB.Omit("lock_bg").Where("slug = ? AND user_id = ?", c.Param("id"), c.GetUint("userID")).First(&h).Error; err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Display not found"})
 		return h, false
 	}
@@ -403,7 +403,7 @@ func ownedHmi(c *gin.Context) (Hmi, bool) {
 
 func ListHmis(c *gin.Context) {
 	var hs []Hmi
-	DB.Where("user_id = ?", c.GetUint("userID")).Order("name ASC, id ASC").Find(&hs)
+	DB.Omit("lock_bg").Where("user_id = ?", c.GetUint("userID")).Order("name ASC, id ASC").Find(&hs)
 	c.JSON(http.StatusOK, buildHmiViews(hs))
 }
 
@@ -425,7 +425,7 @@ func GetHmi(c *gin.Context) {
 	var nodes []Node
 	DB.Where("gateway_id = ? AND connected_at IS NOT NULL", h.GatewayID).Order("name ASC, device_id ASC").Find(&nodes)
 	var hs []Hmi
-	DB.Where("gateway_id = ?", h.GatewayID).Find(&hs)
+	DB.Omit("lock_bg").Where("gateway_id = ?", h.GatewayID).Find(&hs)
 	names := map[uint]string{}
 	for _, x := range hs {
 		names[x.ID] = x.Name
@@ -562,7 +562,7 @@ func HMIGetGateway(c *gin.Context) {
 		return
 	}
 	var h Hmi
-	DB.Select("id", "name", "theme", "accent", "brightness", "status_led", "background", "led_mode", "led_color", "led_brightness", "led_speed", "sleep_after", "led_sleep_off").First(&h, c.GetUint("hmiID"))
+	DB.Select("id", "name", "theme", "accent", "brightness", "status_led", "background", "led_mode", "led_color", "led_brightness", "led_speed", "sleep_after", "led_sleep_off", "lock_bg_version").First(&h, c.GetUint("hmiID"))
 	c.JSON(http.StatusOK, gin.H{"id": gw.ID, "name": gw.Name, "isOnline": gw.IsOnline, "hmiId": h.ID, "hmiName": h.Name,
 		"appearance": appearanceOf(h)})
 }
@@ -598,7 +598,7 @@ func appearanceOf(h Hmi) gin.H {
 	}
 	return gin.H{"theme": theme, "accent": accent, "brightness": br, "statusLed": h.StatusLed,
 		"background": bg, "ledMode": mode, "ledColor": ledColor, "ledBrightness": lb, "ledSpeed": ls,
-		"sleepAfter": h.SleepAfter, "ledSleepOff": h.LedSleepOff}
+		"sleepAfter": h.SleepAfter, "ledSleepOff": h.LedSleepOff, "lockBg": h.LockBgVersion}
 }
 
 // Patterns the onboard RGB LED can play (the display firmware maps these to effects).

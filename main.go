@@ -62,6 +62,7 @@ func main() {
 	hub.LoadPendingProvisions()
 	hub.StartTimeSync()
 	hub.StartOutputFlusher()
+	hub.StartDataLogPruner()
 
 	// Fire up the TCP listener for the WiFi gateway as a background Goroutine
 	go hub.StartTCPWorker(":" + env("TCP_PORT", "9010"))
@@ -112,6 +113,7 @@ func main() {
 	hmi.Use(hub.HMIAuthMiddleware())
 	{
 		hmi.GET("/gateway", hub.HMIGetGateway)
+		hmi.GET("/lockbg", hub.HMILockBackground)
 		hmi.POST("/unpair", hub.HMIUnpair)
 		hmi.POST("/display", hub.HMISetDisplay)
 		hmi.GET("/gateways/:id/all-nodes", hub.HMIListAllNodes)
@@ -133,6 +135,9 @@ func main() {
 		api.GET("/hmis/:id", hub.GetHmi)
 		api.PUT("/hmis/:id", hub.RenameHmi)
 		api.PUT("/hmis/:id/appearance", hub.SetHmiAppearance)
+		api.POST("/hmis/:id/background", hub.UploadHmiBackground)
+		api.GET("/hmis/:id/background", hub.GetHmiBackground)
+		api.DELETE("/hmis/:id/background", hub.DeleteHmiBackground)
 		api.GET("/audit", hub.ListAudit)
 		api.DELETE("/hmis/:id", hub.DeleteHmi)
 		api.PUT("/hmis/:id/nodes", hub.SetHmiNodes)
@@ -163,6 +168,11 @@ func main() {
 		api.POST("/mfa/recovery", hub.MfaRegenerateRecovery)
 		// Dashboard
 		api.GET("/stats", hub.GetDashboardStats)
+		api.GET("/monitor", hub.GetMonitor)
+		api.GET("/gateways/:id/logging", hub.GetGatewayLogging)
+		api.PUT("/gateways/:id/logging", hub.SetGatewayLogging)
+		api.GET("/nodes/:nodeId/history", hub.GetNodeHistory)
+		api.PUT("/monitor/prefs", hub.SetMonitorPrefs)
 		// Gateways
 		api.GET("/gateways", hub.ListGateways)
 		api.POST("/gateways", hub.CreateGateway)

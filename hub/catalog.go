@@ -20,6 +20,12 @@ type CapChannel struct {
 	Label string  `json:"label"`
 	Unit  string  `json:"unit,omitempty"`
 	Scale float64 `json:"scale"` // reported integer / scale = real value
+	// Dash says how the monitoring dashboard shows this channel: "gauge" (a number),
+	// "bool" (an on/off indicator), "text" (a clock...). Empty = not shown.
+	Dash string  `json:"dash,omitempty"`
+	Min  float64 `json:"min,omitempty"`
+	Max  float64 `json:"max,omitempty"`
+	Icon string  `json:"icon,omitempty"` // default symbol
 }
 
 type ActionParam struct {
@@ -97,10 +103,10 @@ var capCatalog = []CapType{
 		Fields: []CapField{{Key: "pin", Label: "GPIO", Default: 32, Max: 33}}},
 	{Key: "analogInput", Code: 0, Label: "Analog input", Kind: "io", Hint: "Potentiometer, light sensor…",
 		Fields:   []CapField{{Key: "pin", Label: "GPIO", Default: 34, Max: 39}},
-		Channels: []CapChannel{{ID: 0, Key: "value", Label: "Value", Scale: 1}}},
+		Channels: []CapChannel{{ID: 0, Key: "value", Label: "Value", Scale: 1, Dash: "gauge", Min: 0, Max: 4095, Icon: "gauge"}}},
 	{Key: "digitalInput", Code: 2, Label: "Digital input", Kind: "io", Hint: "Button, switch, PIR…",
 		Fields:   []CapField{{Key: "pin", Label: "GPIO", Default: 35, Max: 39}},
-		Channels: []CapChannel{{ID: 0, Key: "state", Label: "State", Scale: 1}}},
+		Channels: []CapChannel{{ID: 0, Key: "state", Label: "State", Scale: 1, Dash: "bool", Icon: "input"}}},
 	{Key: "neopixel", Code: 9, Label: "NeoPixel LEDs", Kind: "actuator", Hint: "WS2812 strip or ring",
 		Fields: []CapField{
 			{Key: "pin", Label: "Data GPIO", Default: 27, Max: 33},
@@ -126,8 +132,8 @@ var capCatalog = []CapType{
 			{Key: "extra", Label: "Model", Default: 22, Options: []int{11, 22}},
 		},
 		Channels: []CapChannel{
-			{ID: 0, Key: "temperature", Label: "Temperature", Unit: "°C", Scale: 100},
-			{ID: 1, Key: "humidity", Label: "Humidity", Unit: "%", Scale: 100},
+			{ID: 0, Key: "temperature", Label: "Temperature", Unit: "°C", Scale: 100, Dash: "gauge", Min: -10, Max: 50, Icon: "thermometer"},
+			{ID: 1, Key: "humidity", Label: "Humidity", Unit: "%", Scale: 100, Dash: "gauge", Min: 0, Max: 100, Icon: "droplet"},
 		}},
 	{Key: "ld2410", Code: 12, Label: "LD2410 presence radar", Kind: "sensor", Singleton: true, Hint: "mmWave presence; uses UART2",
 		Fields: []CapField{
@@ -135,12 +141,12 @@ var capCatalog = []CapType{
 			{Key: "pin2", Label: "Node TX GPIO (sensor RX)", Default: 17, Max: 33},
 		},
 		Channels: []CapChannel{
-			{ID: 0, Key: "presence", Label: "Presence (0 none, 1 moving, 2 still, 3 both)", Scale: 1},
+			{ID: 0, Key: "presence", Label: "Presence", Scale: 1, Dash: "bool", Icon: "radar"},
 			{ID: 1, Key: "movingDistance", Label: "Moving distance", Unit: "cm", Scale: 1},
 			{ID: 2, Key: "movingEnergy", Label: "Moving energy", Scale: 1},
 			{ID: 3, Key: "stillDistance", Label: "Still distance", Unit: "cm", Scale: 1},
 			{ID: 4, Key: "stillEnergy", Label: "Still energy", Scale: 1},
-			{ID: 5, Key: "detectionDistance", Label: "Detection distance", Unit: "cm", Scale: 1},
+			{ID: 5, Key: "detectionDistance", Label: "Detection distance", Unit: "cm", Scale: 1, Dash: "gauge", Min: 0, Max: 600, Icon: "ruler"},
 		}},
 	{Key: "ds3231", Code: 13, Label: "DS3231 real-time clock", Kind: "sensor", Singleton: true,
 		Hint: "Supplies the time to the whole system; uses I2C",
@@ -149,8 +155,8 @@ var capCatalog = []CapType{
 			{Key: "pin2", Label: "SCL GPIO", Default: 22, Max: 33},
 		},
 		Channels: []CapChannel{
-			{ID: 0, Key: "time", Label: "Time (UTC epoch)", Unit: "s", Scale: 1},
-			{ID: 1, Key: "temperature", Label: "Chip temperature", Unit: "°C", Scale: 100},
+			{ID: 0, Key: "time", Label: "Clock", Unit: "s", Scale: 1, Dash: "text", Icon: "clock"},
+			{ID: 1, Key: "temperature", Label: "Chip temperature", Unit: "°C", Scale: 100, Dash: "gauge", Min: 0, Max: 60, Icon: "thermometer"},
 			{ID: 2, Key: "valid", Label: "Clock valid (0 = battery was lost)", Scale: 1},
 		},
 		Actions: []CapAction{{ID: 2, Key: "syncTime", Label: "Set clock from the hub"}}},

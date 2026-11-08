@@ -25,9 +25,11 @@ type User struct {
 	TotpLastStep int64  `gorm:"default:0" json:"-"`     // last accepted 30 s step (blocks code replay)
 	MfaRecovery  string `gorm:"type:text" json:"-"`     // JSON array of sha256 hashes of unused recovery codes
 	// TokenVersion invalidates every older session when the password changes.
-	TokenVersion int       `gorm:"default:0" json:"-"`
-	CreatedAt    time.Time `json:"createdAt"`
-	UpdatedAt    time.Time `json:"updatedAt"`
+	TokenVersion int `gorm:"default:0" json:"-"`
+	// DashPrefs: monitoring dashboard choices (JSON): hidden widgets, last gateway.
+	DashPrefs string    `gorm:"type:text" json:"-"`
+	CreatedAt time.Time `json:"createdAt"`
+	UpdatedAt time.Time `json:"updatedAt"`
 }
 
 // MfaDevice is a phone (the mobile app) that can approve sign-ins.
@@ -69,6 +71,13 @@ type Gateway struct {
 	LastSeen         time.Time  `json:"lastSeen"`
 	APIKeyAssignedAt *time.Time `json:"apiKeyAssignedAt"`
 	Mac              string     `gorm:"size:17" json:"mac"` // hardware (MAC) address, as reported by the gateway
+	// Data logging on the gateway (see datalog.go): where it keeps readings while the
+	// hub is unreachable, how much space it may use, and the RTC / SD card pins.
+	LogStore int `gorm:"default:0" json:"-"`   // 0 flash, 1 SD card
+	LogMaxKB int `gorm:"default:256" json:"-"` // space limit; the oldest data is overwritten
+	SdCS     int `gorm:"default:5" json:"-"`
+	RtcSda   int `gorm:"default:21" json:"-"`
+	RtcScl   int `gorm:"default:22" json:"-"`
 	// WifiDirty: the saved-network list was changed on the hub while (or without
 	// the gateway confirming) so the hub list must overwrite the gateway's.
 	WifiDirty bool      `gorm:"default:false" json:"-"`
@@ -87,6 +96,8 @@ type CapabilityConfig struct {
 	Count int  `json:"count,omitempty"`
 	Ring  bool `json:"ring,omitempty"`
 	Pin2  int  `json:"pin2,omitempty"`
+	// Symbol is the icon the user picked for this module on the dashboard.
+	Symbol string `json:"symbol,omitempty"`
 	// Short human text of the module's current state (sensors, patterns); filled by the hub.
 	Display string `json:"display,omitempty"`
 }
@@ -141,8 +152,11 @@ type Hmi struct {
 	LedBrightness int    `gorm:"default:40" json:"ledBrightness"`      // 1-100 (%)
 	LedSpeed      int    `gorm:"default:50" json:"ledSpeed"`           // 1-100
 
-	SleepAfter  int  `gorm:"default:0" json:"sleepAfter"`     // seconds of no touch before the screen goes off, 0 = never
-	LedSleepOff bool `gorm:"default:true" json:"ledSleepOff"` // switch the RGB LED off while the screen is off
+	SleepAfter int `gorm:"default:0" json:"sleepAfter"` // seconds of no touch before the screen goes off, 0 = never
+	// Lock-screen picture (see lockbg.go): 320x240 RGB565, built from an upload.
+	LockBg        []byte `gorm:"type:mediumblob" json:"-"`
+	LockBgVersion int    `gorm:"default:0" json:"lockBgVersion"`
+	LedSleepOff   bool   `gorm:"default:true" json:"ledSleepOff"` // switch the RGB LED off while the screen is off
 }
 
 // Rule connects modules to each other: "when <sensor channel> <op> <threshold>, do <action>".
@@ -460,7 +474,7 @@ func GetAllDiscoveredNodes() []DiscoveredNodeInfo {
 // ── Auto-migrate all models ──────────────────────────────────────────────────
 
 func AutoMigrate(db *gorm.DB) error {
-	if err := db.AutoMigrate(&User{}, &Gateway{}, &Node{}, &AuditLog{}, &WifiCredential{}, &CapabilityBinding{}, &PendingAction{}, &Hmi{}, &MfaDevice{}, &UserSession{}, &PendingProvisionRow{}, &Rule{}, &DetachedNode{}); err != nil {
+	if err := db.AutoMigrate(&User{}, &Gateway{}, &Node{}, &AuditLog{}, &WifiCredential{}, &CapabilityBinding{}, &PendingAction{}, &Hmi{}, &MfaDevice{}, &UserSession{}, &PendingProvisionRow{}, &Rule{}, &DetachedNode{}, &DataPoint{}); err != nil {
 		return err
 	}
 	backfillSlugs(db)
